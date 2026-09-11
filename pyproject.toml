@@ -2,3 +2,6 @@
 testpaths = ["backend/tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = [
+    "integration: loads the local 4B model and requires an RTX 4090",
+]

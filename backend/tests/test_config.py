@@ -14,7 +14,8 @@ def valid_data(tmp_path):
     return dict(project_root=project, storage_root=storage,
                 model_dir=storage / "models", hf_home=storage / "cache" / "huggingface",
                 dataset_dir=storage / "datasets", output_dir=storage / "outputs",
-                checkpoint_dir=storage / "checkpoints", temp_dir=storage / "temp")
+                checkpoint_dir=storage / "checkpoints", temp_dir=storage / "temp",
+                vlm_model_path=storage / "models" / "Qwen3-VL-4B-Instruct")
 
 
 def test_config_parses_env(tmp_path, monkeypatch):

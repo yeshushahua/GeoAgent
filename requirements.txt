@@ -13,3 +13,7 @@ httpx>=0.28,<1
 python-dotenv>=1,<2
 pytest>=8,<10
 pytest-cov>=6,<8
+transformers>=4.57
+accelerate>=1.11,<2
+qwen-vl-utils==0.0.14
+huggingface-hub>=0.34,<2
