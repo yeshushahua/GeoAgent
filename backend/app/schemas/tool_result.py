@@ -1,14 +1,26 @@
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class ToolError(BaseModel):
     code: str = Field(min_length=1)
+    type: str | None = Field(default=None, min_length=1)
     message: str = Field(min_length=1)
     details: dict[str, JsonValue] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def default_type_to_code(self):
+        if self.type is None:
+            self.type = self.code
+        return self
+
 
 class Artifact(BaseModel):
-    kind: str = Field(min_length=1, description="image, mask, geojson, geotiff, json, chart, ...")
+    kind: str = Field(
+        min_length=1,
+        description="image, mask, geojson, geotiff, json, chart, ...",
+        validation_alias=AliasChoices("kind", "type"),
+        serialization_alias="type",
+    )
     path: str = Field(min_length=1)
     mime_type: str | None = None
 

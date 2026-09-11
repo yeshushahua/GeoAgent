@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     vlm_max_visual_tokens: int = Field(default=1280, ge=256, le=4096)
     vlm_default_max_new_tokens: int = Field(default=256, ge=64, le=512)
     app_name: str = "GeoAgent"
-    app_version: str = "0.2.0"
+    app_version: str = "0.3.0"
+    tool_trace_limit: int = Field(default=50, ge=1, le=1000)
+    tool_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_host: str = "127.0.0.1"

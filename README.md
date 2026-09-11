@@ -3,32 +3,26 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 1 — Qwen3-VL-4B Multimodal Baseline.
+Current milestone: Phase 2 — Tool System Foundation.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
 The user uploads one ordinary RGB image, sends a Chinese or English prompt through
-FastAPI, and receives a structured InferenceResult with the answer, latency,
-preprocessing size and GPU memory. Gradio calls those same backend endpoints.
+FastAPI, and receives a structured ToolResult with the answer, latency,
+preprocessing size and GPU memory. Gradio Analyze now calls the Tool API.
 
-This is the multimodal foundation, not an Agent. Tool calling, LangGraph, YOLO,
-SAM, GeoTIFF/GIS processing, RAG and fine-tuning are not implemented.
+This is a tool-enabled multimodal system, not an autonomous Agent. LangGraph,
+planning, autonomous tool selection, ReAct, YOLO, SAM, GeoTIFF/GIS processing,
+RAG and fine-tuning are not implemented.
 
 ## Architecture
 
-    Gradio
-       |
-       | multipart HTTP
-       v
-    FastAPI /api/v1/models/vlm
-       |
-       v
-    ModelManager
-       |
-       v
-    QwenVlModel -> local Qwen3-VL-4B-Instruct -> cuda:0 BF16
+    Gradio -> Tool API -> ToolExecutor -> ToolRegistry -> analyze_image
+                                                        |
+                                                        v
+    ToolResult <- InferenceResult <- ModelManager <- Qwen3-VL on cuda:0 BF16
 
 Model code never returns FastAPI responses. InferenceResult belongs to the model
-layer; the Phase 0 ToolResult remains reserved for later Agent tools.
+layer and `analyze_image` converts it to the shared ToolResult contract.
 The application starts in UNLOADED state. Importing FastAPI does not load weights.
 
 ## Verified environment
@@ -124,6 +118,20 @@ Model endpoints:
 - POST /api/v1/models/vlm/unload
 - POST /api/v1/models/vlm/infer
 
+Tool endpoints:
+
+- GET /api/v1/tools
+- GET /api/v1/tools/{tool_name}
+- POST /api/v1/tools/{tool_name}/execute
+- GET /api/v1/tools/executions?limit=20
+
+The registry currently contains `inspect_image`, `crop_image`, and
+`analyze_image`. Each exposes a Pydantic JSON Schema. ToolExecutor validates
+inputs, generates an execution ID, records duration, isolates failures, returns a
+ToolResult, and keeps the latest 50 safe in-memory trace records. Crop artifacts
+are written below `E:\sht\DEMO\GeoAgent\outputs\tools`; image bytes are never put
+inside ToolResult JSON. See `docs/tool-system.md` for the complete boundary.
+
 The infer endpoint accepts multipart image, prompt and max_new_tokens. Supported
 formats are PNG, JPEG/JPG and WEBP. max_new_tokens is limited to 64–512.
 Errors have an error.code and safe error.message; server tracebacks stay in logs.
@@ -162,6 +170,10 @@ With FastAPI running:
 With FastAPI and Gradio running:
 
     .\.venv\Scripts\python.exe -m scripts.verify_ui
+
+The integration suite includes the real Phase 2 Tool API chain, model auto-load,
+manual `inspect_image -> crop_image -> analyze_image` execution, five consecutive
+Qwen tool calls, GPU allocation regression, trace checks, and executor overhead.
 
 ## Benchmark
 

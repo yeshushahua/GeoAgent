@@ -1,4 +1,4 @@
-"""HTTP-level Gradio Phase 1 acceptance using real component event endpoints."""
+"""HTTP-level Gradio Phase 2 acceptance using real component event endpoints."""
 import argparse
 import json
 import logging
@@ -41,26 +41,40 @@ def main():
     with Image.open(source) as original, Image.open(result_path) as result:
         assert original.size == result.size
         assert original.convert("RGB").tobytes() == result.convert("RGB").tobytes()
-    status, info = client.predict(api_name="/load_model")
-    assert info["model"]["state"] == "READY"
-    answer, metrics, status, info = client.predict(
+    status, info = client.predict(api_name="/unload_model")
+    assert info["model"]["state"] == "UNLOADED"
+    answer, result, status, info, tool_panel = client.predict(
         handle_file(str(source)), "Describe this image briefly.", 64, api_name="/analyze"
     )
-    assert answer and metrics["model"] == "Qwen3-VL-4B-Instruct"
-    assert metrics["device"] == "cuda:0" and metrics["dtype"] == "bfloat16"
-    assert metrics["latency_ms"] > 0 and metrics["gpu"]["peak_allocated_gb"] > 0
+    assert answer and result["success"] and result["tool"] == "analyze_image"
+    assert result["metadata"]["model"] == "Qwen3-VL-4B-Instruct"
+    assert result["metadata"]["device"] == "cuda:0"
+    assert result["metadata"]["dtype"] == "bfloat16"
+    assert result["metadata"]["latency_ms"] > 0
+    assert result["metadata"]["gpu_peak_gb"] > 0
+    assert result["metadata"]["execution_id"] in tool_panel
+    assert "SUCCESS" in tool_panel and "analyze_image → Qwen3-VL" in tool_panel
     assert info["model"]["state"] == "READY"
+    summary, inspect_result, inspect_preview, inspect_panel = client.predict(
+        "inspect_image", handle_file(str(source)), "unused", 64,
+        0, 0, 256, 256, api_name="/execute_tool"
+    )
+    assert summary and inspect_result["data"]["width"] > 0
+    assert inspect_preview and "SUCCESS" in inspect_panel
     status, info = client.predict(api_name="/unload_model")
     assert info["model"]["state"] == "UNLOADED"
     output = {
         "answer": answer,
-        "metrics": metrics,
+        "tool_result": result,
+        "tool_panel": tool_panel,
+        "manual_inspect": inspect_result,
         "final_model_state": info["model"],
     }
-    target = settings.output_dir / "benchmarks" / "phase1" / "gradio_acceptance.json"
+    target = settings.output_dir / "benchmarks" / "phase2" / "gradio_acceptance.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
     logging.info(
-        "Gradio Phase 1 PASS: page, upload/preview, API load, real VLM analyze, metrics, unload"
+        "Gradio Phase 2 PASS: page, upload/preview, auto-load Tool API analyze, tool panel, manual inspect, unload"
     )
     logging.info("Acceptance written to %s", target)
 

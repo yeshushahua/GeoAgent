@@ -1,6 +1,8 @@
+import inspect
+
 import httpx
 
-from frontend.app import PLACEHOLDER, chat, fetch_status
+from frontend.app import PLACEHOLDER, _post_tool, analyze, chat, fetch_status
 
 
 def test_chat_placeholder():
@@ -17,3 +19,9 @@ def test_backend_unavailable(settings, monkeypatch):
     title, details = fetch_status(settings)
     assert "Backend unavailable" in title
     assert details == {"backend": "unavailable"}
+
+
+def test_analysis_boundary_uses_tool_api_only():
+    source = inspect.getsource(_post_tool) + inspect.getsource(analyze)
+    assert "/tools/{tool_name}/execute" in source
+    assert "/models/vlm/infer" not in source
