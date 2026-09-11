@@ -1,0 +1,15 @@
+# Install CUDA wheels first; see requirements-gpu.txt and README.
+torch==2.10.0
+torchvision==0.25.0
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+gradio>=6,<7
+pillow>=11,<13
+opencv-python>=4.11,<5
+numpy>=2,<3
+httpx>=0.28,<1
+python-dotenv>=1,<2
+pytest>=8,<10
+pytest-cov>=6,<8
