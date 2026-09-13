@@ -11,6 +11,8 @@ from backend.app.tools.trace import ToolTraceStore
 
 if TYPE_CHECKING:
     from backend.app.detection.manager import DetectorManager
+    from backend.app.open_vocabulary.manager import OpenVocabularyDetectorManager
+    from backend.app.segmentation.manager import SegmentationManager
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,8 @@ class ToolContext:
     logger: logging.Logger
     trace_store: ToolTraceStore
     detector_manager: DetectorManager | None = None
+    open_vocab_manager: OpenVocabularyDetectorManager | None = None
+    segmentation_manager: SegmentationManager | None = None
 
     def validate_read_path(self, value: Path) -> Path:
         path = value.expanduser().resolve()

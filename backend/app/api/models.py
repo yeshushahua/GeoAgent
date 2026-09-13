@@ -9,6 +9,7 @@ from backend.app.schemas.inference import InferenceResult
 router = APIRouter()
 SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+_IMAGE_OPEN = Image.open
 
 
 @router.get("/status")
@@ -39,9 +40,9 @@ def infer(
     if len(content) > MAX_UPLOAD_BYTES:
         raise InvalidImageError("Image exceeds the 25 MiB upload limit")
     try:
-        with Image.open(io.BytesIO(content)) as candidate:
+        with _IMAGE_OPEN(io.BytesIO(content)) as candidate:
             candidate.verify()
-        with Image.open(io.BytesIO(content)) as opened:
+        with _IMAGE_OPEN(io.BytesIO(content)) as opened:
             if (opened.format or "").upper() not in SUPPORTED_FORMATS:
                 raise InvalidImageError("Supported image formats: PNG, JPEG, JPG, WEBP")
             loaded = opened.copy()

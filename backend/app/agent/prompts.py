@@ -10,6 +10,10 @@ tool, argument, observation, image fact, or external capability. Use inspect_ima
 for exact dimensions/format, crop_image for pixel-coordinate cropping, and
 analyze_image for visual semantic understanding. Use detect_objects for precise
 closed-set COCO object classes, counts, confidence scores, and bounding boxes. Use
+detect_open_vocab for arbitrary user-named text categories outside or more specific
+than COCO. Use segment_objects only for precise instance masks from explicit bbox
+prompts already present in a detection observation. Translate requested target
+labels into concise English phrases when calling detect_open_vocab. Use
 the fewest necessary tools.
 Mandatory selection policy:
 - A request only about width, height, mode, format, file size, or aspect ratio uses
@@ -19,8 +23,30 @@ Mandatory selection policy:
 - A crop described as a fraction of the image uses inspect_image first only when
   dimensions are not already present in observations.
 - A request to detect objects, count each object class, locate objects with boxes,
-  or report detection confidence MUST use detect_objects. Do not substitute
-  analyze_image to estimate these structured facts.
+  or report detection confidence for ordinary COCO categories MUST use
+  detect_objects. Do not substitute analyze_image to estimate these facts.
+- A request for a dynamic, non-COCO, visually specific, or user-defined target such
+  as a yellow safety helmet, tower crane, or tent on a riverbank MUST use
+  detect_open_vocab with classes containing the requested English target phrases.
+  Do not reject such labels as unsupported COCO classes.
+- A request that only says detect, find, locate, count, or report boxes for an
+  open-vocabulary target MUST call detect_open_vocab and then return final. It MUST
+  NOT call segment_objects unless the user explicitly asks for segmentation, a
+  mask, a precise outline, extraction, or pixel-area proportion. The phrase
+  "yellow safety helmet" describes a target class; it does not request a mask.
+- A request to segment, extract a precise outline, create a mask, or compute the
+  fraction of image pixels occupied by a target requires detection first and then
+  segment_objects. For dynamic targets use detect_open_vocab; for ordinary COCO
+  targets detect_objects may be used. Copy every requested detection bbox exactly
+  from the detection observation into segment_objects.boxes. Use the exact same
+  image_path examined by the detector. SAM must never invent or relocate boxes.
+  Detector annotated images such as open-vocab-annotated.jpg and annotated.jpg are
+  display-only artifacts and MUST NEVER be passed to segment_objects. For example,
+  after crop_image(path=crop.png) then detect_open_vocab(image_path=crop.png), the
+  required call is segment_objects(image_path=crop.png, boxes=<exact detection
+  observation boxes>), never a detector annotation artifact.
+- If the relevant detector returns detection_count=0, return a truthful final answer
+  immediately. Do not call segment_objects with fabricated or empty boxes.
 - A detection-only request uses detect_objects directly and then returns final.
   Do not call inspect_image or analyze_image unless the user also requests their
   distinct capability.
@@ -39,7 +65,9 @@ For region requests whose coordinates depend on image dimensions, inspect first,
 then compute coordinates from the observation. After crop_image, any requested
 analysis of the crop MUST use the returned crop artifact path, not the original.
 Likewise, after crop_image, any requested detection of the crop MUST call
-detect_objects with the returned crop artifact path, not the original image.
+detect_objects or detect_open_vocab with the returned crop artifact path, not the
+original image. Any following segment_objects call MUST use that same crop artifact
+path and the bboxes returned for the crop coordinate space.
 Spatial rules for rectangular corner regions:
 - "top-left quarter" (Chinese: "左上四分之一") means the top-left quadrant: split
   the image into 2 equal parts horizontally and 2 equal parts vertically. It is
@@ -65,9 +93,10 @@ correct the call or explain the limitation. Do not reveal chain-of-thought.
 After one successful analyze_image observation for a content-only request, the
 next decision MUST be final. Do not call analyze_image again with a rephrased
 prompt to inspect the same image.
-detect_objects is a closed-set COCO detector. If a requested class is unsupported,
-explain that boundary honestly after the tool error. Never fabricate a detection,
-and never claim open-vocabulary, segmentation, or tracking capability.
+detect_objects remains a closed-set COCO detector. detect_open_vocab is text-prompt
+open-vocabulary localization, and segment_objects reports pixel masks and pixel-area
+ratios only. Never describe mask area as square metres, hectares, or geographic area.
+Never fabricate a detection or mask, and never claim tracking capability.
 
 Each response MUST contain exactly one JSON object and nothing else:
 {"type":"tool_call","tool_name":"name","arguments":{...}}
@@ -88,12 +117,20 @@ def build_planner_prompt(
     observations = []
     for item in state.observations[-state.max_steps:]:
         result = item.result
+        # Detector renderings are presentation artifacts, never inputs to another model.
+        # Omitting them here prevents a small planner model from confusing a preview
+        # path with the authoritative source image recorded in result.data.
+        planner_artifacts = [] if result.tool in {
+            "detect_objects", "detect_open_vocab", "segment_objects"
+        } else [
+            artifact.model_dump(mode="json", by_alias=True) for artifact in result.artifacts
+        ]
         observations.append({
             "step": item.step,
             "tool_name": item.tool_name,
             "success": result.success,
             "data": result.data,
-            "artifacts": [artifact.model_dump(mode="json", by_alias=True) for artifact in result.artifacts],
+            "artifacts": planner_artifacts,
             "error": result.error.model_dump(mode="json") if result.error else None,
         })
     context = {
@@ -104,6 +141,25 @@ def build_planner_prompt(
         "observations": observations,
         "remaining_steps": state.max_steps - state.step_count,
     }
+    if state.observations:
+        latest = state.observations[-1].result
+        if latest.success and latest.tool in {"detect_objects", "detect_open_vocab"}:
+            source = latest.data.get("source_image_path", state.original_image_path)
+            count = latest.data.get("detection_count", 0)
+            if count == 0:
+                context["next_action_contract"] = (
+                    "The latest detector found zero targets. The next decision must be final."
+                )
+            else:
+                context["next_action_contract"] = (
+                    "Bounding boxes being available does not itself authorize segmentation. "
+                    "Re-read the original user request. If it asks only to detect/find/locate/count, "
+                    "the next decision must be final. Only an explicit request for masks, precise "
+                    "segmentation/outlines, extraction, or pixel area authorizes segment_objects. "
+                    f"If authorized, segment_objects.image_path must be exactly {source!s}; copy the "
+                    "latest detection boxes exactly. Detector preview artifacts are unavailable as "
+                    "model inputs."
+                )
     parts = ["Runtime context:", json.dumps(context, ensure_ascii=False)]
     if repair_output is not None:
         parts.extend([

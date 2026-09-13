@@ -35,8 +35,17 @@ class Settings(BaseSettings):
     detector_device: Literal["cuda:0"] = "cuda:0"
     detector_imgsz: int = Field(default=640, ge=320, le=1280)
     detector_config_dir: Path
+    open_vocab_model_id: str = "yoloe-26s-seg"
+    open_vocab_model_path: Path
+    open_vocab_text_encoder_path: Path
+    open_vocab_device: Literal["cuda:0"] = "cuda:0"
+    open_vocab_imgsz: int = Field(default=640, ge=320, le=1280)
+    segmentation_model_id: str = "sam2.1_b"
+    segmentation_model_path: Path
+    segmentation_device: Literal["cuda:0"] = "cuda:0"
+    segmentation_imgsz: int = Field(default=1024, ge=512, le=2048)
     app_name: str = "GeoAgent"
-    app_version: str = "0.5.0"
+    app_version: str = "0.6.0"
     tool_trace_limit: int = Field(default=50, ge=1, le=1000)
     tool_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     agent_default_max_steps: int = Field(default=6, ge=1, le=10)
@@ -54,6 +63,8 @@ class Settings(BaseSettings):
     def validate_paths(self):
         names = (
             "project_root", "storage_root", "vlm_model_path", "detector_model_path",
+            "open_vocab_model_path", "open_vocab_text_encoder_path",
+            "segmentation_model_path",
             *self.asset_paths.keys(),
         )
         for name in names:
@@ -78,6 +89,12 @@ class Settings(BaseSettings):
         if (not self.detector_model_path.is_relative_to(self.model_dir)
                 or self.detector_model_path == self.model_dir):
             raise ValueError("DETECTOR_MODEL_PATH must be a child of MODEL_DIR")
+        for name in (
+            "open_vocab_model_path", "open_vocab_text_encoder_path", "segmentation_model_path"
+        ):
+            path = getattr(self, name)
+            if not path.is_relative_to(self.model_dir) or path == self.model_dir:
+                raise ValueError(f"{name.upper()} must be a child of MODEL_DIR")
         if len(set(self.asset_paths.values())) != len(self.asset_paths):
             raise ValueError("Asset directories must be distinct")
         return self

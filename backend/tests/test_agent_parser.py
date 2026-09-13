@@ -21,6 +21,20 @@ def test_parse_tool_call_and_validate_arguments(settings):
     assert decision.tool_name == "inspect_image"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"type":"inspect_image","arguments":{"image_path":"x.png"}}',
+        '{"type":"inspect_image","image_path":"x.png"}',
+    ],
+)
+def test_parse_registered_tool_shorthand(settings, raw):
+    decision = AgentOutputParser().parse(raw, registry(settings))
+    assert isinstance(decision, AgentToolCall)
+    assert decision.tool_name == "inspect_image"
+    assert decision.arguments == {"image_path": "x.png"}
+
+
 @pytest.mark.parametrize("raw", [
     '```json\n{"type":"final","answer":"完成"}\n```',
     'Here is the result: {"type":"final","answer":"完成"}',

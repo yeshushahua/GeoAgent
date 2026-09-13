@@ -1,5 +1,6 @@
 """Chinese Gradio UI; the primary analysis path goes through VisionAgent."""
 import io
+import json
 import logging
 import os
 
@@ -39,6 +40,16 @@ def _detector_markdown(detector: dict) -> str:
     )
 
 
+def _advanced_model_markdown(title: str, model: dict) -> str:
+    state = model.get("state", "UNKNOWN")
+    marker = "●" if state == "READY" else "○"
+    return (
+        f"### {title} {marker} {state}\n"
+        f"设备：{model.get('device', '-')} · 加载次数：{model.get('load_count', 0)} · "
+        f"离线：{model.get('offline', False)}\n\n权重：{model.get('model_path', '-')}"
+    )
+
+
 def fetch_status(settings: Settings) -> tuple[str, dict]:
     try:
         with httpx.Client(timeout=5, trust_env=False) as client:
@@ -50,10 +61,15 @@ def fetch_status(settings: Settings) -> tuple[str, dict]:
             model.raise_for_status()
             detector = client.get(f"{settings.api_base_url}/models/detector/status")
             detector.raise_for_status()
+            open_vocab = client.get(f"{settings.api_base_url}/models/open-vocabulary/status")
+            open_vocab.raise_for_status()
+            segmentation = client.get(f"{settings.api_base_url}/models/segmentation/status")
+            segmentation.raise_for_status()
             tools = client.get(f"{settings.api_base_url}/tools")
             tools.raise_for_status()
-        health_data, info, model_info, detector_info, tool_info = (
-            health.json(), system.json(), model.json(), detector.json(), tools.json()
+        health_data, info, model_info, detector_info, open_vocab_info, segmentation_info, tool_info = (
+            health.json(), system.json(), model.json(), detector.json(),
+            open_vocab.json(), segmentation.json(), tools.json()
         )
         if health_data.get("status") != "ok":
             raise ValueError("Backend health is not ok")
@@ -62,11 +78,15 @@ def fetch_status(settings: Settings) -> tuple[str, dict]:
         return (
             f"### {title}\n后端：**在线** · CUDA：**{info['cuda_available']}**\n\n"
             f"存储目录：{info['storage_root']}\n\n{_model_markdown(info, model_info)}\n\n"
-            f"{_detector_markdown(detector_info)}",
+            f"{_detector_markdown(detector_info)}\n\n"
+            f"{_advanced_model_markdown('YOLOE-26s Open Vocabulary', open_vocab_info)}\n\n"
+            f"{_advanced_model_markdown('SAM 2.1 Base', segmentation_info)}",
             {
                 "system": info,
                 "model": model_info,
                 "detector": detector_info,
+                "open_vocabulary": open_vocab_info,
+                "segmentation": segmentation_info,
                 "tools": [item["name"] for item in tool_info],
             },
         )
@@ -98,6 +118,8 @@ def _tool_markdown(result: dict) -> str:
     model_step = {
         "analyze_image": " → Qwen3-VL",
         "detect_objects": " → YOLO11s",
+        "detect_open_vocab": " → YOLOE-26s",
+        "segment_objects": " → SAM 2.1 Base",
     }.get(tool, "")
     return (
         "### 工具调用\n"
@@ -155,6 +177,18 @@ def _agent_markdown(result: dict) -> str:
             lines.append(
                 f"   检测总数：**{observation.get('detection_count', 0)}** · {summary}"
             )
+        if tool == "detect_open_vocab" and step.get("success"):
+            observation = step.get("observation_summary", {})
+            counts = observation.get("class_counts", {})
+            summary = "、".join(f"{name} × {count}" for name, count in counts.items()) or "未检出目标"
+            lines.append(
+                f"   开放检测总数：**{observation.get('detection_count', 0)}** · {summary}"
+            )
+        if tool == "segment_objects" and step.get("success"):
+            observation = step.get("observation_summary", {})
+            ratios = [item.get("mask_area_ratio", 0) for item in observation.get("segments", [])]
+            summary = "、".join(f"{value:.2%}" for value in ratios) or "无实例"
+            lines.append(f"   分割实例：**{observation.get('segment_count', 0)}** · 面积比例：{summary}")
     metadata = result.get("metadata", {})
     lines.extend([
         "",
@@ -177,68 +211,85 @@ def _ui_safe_result(value):
     return value
 
 
+def _mask_gallery(result: dict) -> list[str]:
+    return [
+        artifact["path"] for artifact in result.get("artifacts", [])
+        if artifact.get("type") == "mask" and artifact.get("path")
+    ]
+
+
 def analyze(settings: Settings, image, prompt: str, max_new_tokens: int):
     if image is None:
-        yield "请先上传图像。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", None
+        yield "请先上传图像。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", None, []
         return
     if not prompt or not prompt.strip():
-        yield "请先输入任务指令。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", image
+        yield "请先输入任务指令。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", image, []
         return
     try:
         status_text, details = fetch_status(settings)
         state = details.get("model", {}).get("state")
         if state == "ERROR":
             message = details["model"].get("last_error") or "Unknown model error"
-            yield f"模型错误：{message}", {}, status_text, details, "### Agent 执行过程\n尚未执行。", image
+            yield f"模型错误：{message}", {}, status_text, details, "### Agent 执行过程\n尚未执行。", image, []
             return
         if state == "UNLOADED":
-            yield "**正在加载 Qwen3-VL...**", {}, "### 正在加载 Qwen3-VL...", details, "### Agent 执行过程\n正在准备 Vision Agent...", image
-        yield "**Agent 正在决策并调用工具...**", {}, "### Agent 正在分析...", details, "### Agent 执行过程\n正在执行可观察的决策与工具步骤...", image
+            yield "**正在加载 Qwen3-VL...**", {}, "### 正在加载 Qwen3-VL...", details, "### Agent 执行过程\n正在准备 Vision Agent...", image, []
+        yield "**Agent 正在决策并调用工具...**", {}, "### Agent 正在分析...", details, "### Agent 执行过程\n正在执行可观察的决策与工具步骤...", image, []
         result = _post_agent(settings, image, prompt.strip(), int(max_new_tokens))
         status, details = fetch_status(settings)
         if not result.get("success"):
             error = result.get("error", {})
-            yield f"任务失败：{error.get('message', '未知 Agent 错误')}", _ui_safe_result(result), status, details, _agent_markdown(result), image
+            yield f"任务失败：{error.get('message', '未知 Agent 错误')}", _ui_safe_result(result), status, details, _agent_markdown(result), image, []
             return
         preview = image
         if result.get("artifacts"):
             artifact_path = result["artifacts"][-1]["path"]
             with Image.open(artifact_path) as opened:
                 preview = opened.copy()
-        yield result["answer"], _ui_safe_result(result), status, details, _agent_markdown(result), preview
+        yield result["answer"], _ui_safe_result(result), status, details, _agent_markdown(result), preview, _mask_gallery(result)
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         status, details = fetch_status(settings)
-        yield f"后端不可用：{exc}", {}, status, details, "### Agent 执行过程\n请求未能执行。", image
+        yield f"后端不可用：{exc}", {}, status, details, "### Agent 执行过程\n请求未能执行。", image, []
 
 
 def execute_selected_tool(settings, tool_name, image, prompt, tokens, x1, y1, x2, y2):
     if image is None:
-        return "请先上传图像。", {}, None, "### 工具调用\n尚未执行。"
+        return "请先上传图像。", {}, None, "### 工具调用\n尚未执行。", []
     fields = {
         "prompt": prompt.strip() if prompt else None,
         "max_new_tokens": int(tokens),
         "x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2),
     }
+    if tool_name == "detect_open_vocab":
+        classes = [item.strip() for item in (prompt or "").split(",") if item.strip()]
+        fields["classes"] = json.dumps(classes)
+    if tool_name == "segment_objects":
+        fields["boxes"] = json.dumps([{"x1": x1, "y1": y1, "x2": x2, "y2": y2}])
     try:
         result = _post_tool(settings, tool_name, image, fields)
         preview = image
         if result.get("success") and result.get("artifacts"):
-            artifact_path = result["artifacts"][0]["path"]
+            artifact_path = result["artifacts"][-1]["path"]
             with Image.open(artifact_path) as opened:
                 preview = opened.copy()
         if result.get("success"):
             data = result.get("data", {})
-            if tool_name == "detect_objects":
+            if tool_name in {"detect_objects", "detect_open_vocab"}:
                 counts = data.get("class_counts", {})
                 summary = "、".join(f"{name} × {count}" for name, count in counts.items()) or "未检出目标"
                 answer = f"检测完成，共 {data.get('detection_count', 0)} 个目标：{summary}。"
+            elif tool_name == "segment_objects":
+                ratios = "、".join(
+                    f"{item.get('mask_area_ratio', 0):.2%}" for item in data.get("segments", [])
+                )
+                answer = f"分割完成，共 {data.get('segment_count', 0)} 个实例，面积比例：{ratios}。"
             else:
                 answer = data.get("answer") or "工具执行成功。"
         else:
             answer = f"工具执行失败：{result.get('error', {}).get('message', '未知错误')}"
-        return answer, _ui_safe_result(result), preview, _tool_markdown(result)
+        return answer, _ui_safe_result(result), preview, _tool_markdown(result), _mask_gallery(result)
     except (httpx.HTTPError, ValueError, KeyError, OSError) as exc:
-        return f"工具请求失败：{exc}", {}, image, "### 工具调用\n请求未能执行。"
+        return f"工具请求失败：{exc}", {}, image, "### 工具调用\n请求未能执行。", []
 
 
 def chat(message: str, history: list | None):
@@ -267,7 +318,7 @@ def build_ui(settings: Settings | None = None):
         yield from analyze(settings, image, prompt, tokens)
 
     with gr.Blocks(title="GeoAgent", analytics_enabled=False) as demo:
-        gr.Markdown("# GeoAgent\n多模态视觉智能体 · **Phase 4 · Object Detection**")
+        gr.Markdown("# GeoAgent\n多模态视觉智能体 · **Phase 5 · Open Vocabulary + Segmentation**")
         status = gr.Markdown("### 正在连接后端…")
         with gr.Row():
             load = gr.Button("加载模型", variant="primary")
@@ -280,6 +331,9 @@ def build_ui(settings: Settings | None = None):
             result_image = gr.Image(
                 label="智能分析结果 / 预览", type="pil", format="png", interactive=False
             )
+        mask_gallery = gr.Gallery(
+            label="实例 Mask", columns=4, rows=1, height="auto", object_fit="contain"
+        )
         prompt = gr.Textbox(
             label="任务指令", value="分析一下这张图片主要有什么内容。", lines=3
         )
@@ -295,7 +349,10 @@ def build_ui(settings: Settings | None = None):
         tool_execution = gr.Markdown("### Agent 执行过程\n尚未执行。")
         with gr.Accordion("高级 / 手动工具调试", open=False):
             tool_choice = gr.Dropdown(
-                ["inspect_image", "crop_image", "analyze_image", "detect_objects"],
+                [
+                    "inspect_image", "crop_image", "analyze_image", "detect_objects",
+                    "detect_open_vocab", "segment_objects",
+                ],
                 value="inspect_image",
                 label="Tool",
             )
@@ -323,7 +380,7 @@ def build_ui(settings: Settings | None = None):
         analyze_button.click(
             analyze_event,
             [input_image, prompt, max_tokens],
-            [response, inference_details, status, details, tool_execution, result_image],
+            [response, inference_details, status, details, tool_execution, result_image, mask_gallery],
             api_name="analyze",
         )
         run_tool.click(
@@ -331,7 +388,7 @@ def build_ui(settings: Settings | None = None):
                 settings, tool, image, prompt, tokens, left, top, right, bottom
             ),
             [tool_choice, input_image, prompt, max_tokens, x1, y1, x2, y2],
-            [response, inference_details, result_image, tool_execution],
+            [response, inference_details, result_image, tool_execution, mask_gallery],
             api_name="execute_tool",
         )
         demo.load(lambda: fetch_status(settings), outputs=[status, details])

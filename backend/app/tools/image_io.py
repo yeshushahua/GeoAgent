@@ -8,12 +8,13 @@ from backend.app.tools.context import ToolContext
 from backend.app.tools.errors import InvalidToolImageError
 
 SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
+_IMAGE_OPEN = Image.open
 
 
 def open_supported_image(context: ToolContext, value: Path) -> tuple[Path, Image.Image, str]:
     try:
         path = context.validate_read_path(value)
-        with Image.open(path) as opened:
+        with _IMAGE_OPEN(path) as opened:
             image_format = (opened.format or "").upper()
             if image_format not in SUPPORTED_FORMATS:
                 raise InvalidToolImageError("Supported image formats: PNG, JPEG, JPG, WEBP")

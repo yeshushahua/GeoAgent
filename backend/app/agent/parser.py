@@ -20,6 +20,25 @@ from backend.app.tools.registry import ToolRegistry
 class AgentOutputParser:
     def parse(self, raw: str, registry: ToolRegistry) -> AgentDecision:
         payload = self._extract_json(raw)
+        # Small local models occasionally use the registered tool name as the
+        # discriminator. Normalize that unambiguous shorthand through the runtime
+        # registry; argument validation below remains identical to a canonical call.
+        shorthand = payload.get("type")
+        if (
+            isinstance(shorthand, str)
+            and registry.has(shorthand)
+            and "tool_name" not in payload
+        ):
+            arguments = payload.get("arguments")
+            if arguments is None:
+                arguments = {
+                    key: value for key, value in payload.items() if key != "type"
+                }
+            payload = {
+                "type": "tool_call",
+                "tool_name": shorthand,
+                "arguments": arguments,
+            }
         try:
             decision = AGENT_DECISION_ADAPTER.validate_python(payload)
         except ValidationError as exc:

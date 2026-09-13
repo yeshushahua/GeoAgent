@@ -3,19 +3,19 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 4 — Object Detection.
+Current milestone: Phase 5 — Open-Vocabulary Detection + Segmentation.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
 The user uploads one ordinary RGB image and gives a natural-language task. A local
 Qwen3-VL policy model selects tools from registry-generated schemas, observes each
 ToolResult, optionally continues with another tool, and returns a structured final
-response. YOLO11s supplies closed-set COCO object classes, counts, confidence scores,
-pixel bounding boxes, and annotated images. The default Chinese UI calls the Agent API.
+response. YOLO11s supplies closed-set COCO detection, YOLOE-26s-seg locates arbitrary
+text-prompt categories, and SAM 2.1 Base turns detector boxes into instance masks,
+pixel areas, area ratios, and overlays. The default Chinese UI calls the Agent API.
 
 This is a small Tool-enabled Vision Agent with autonomous tool selection. It uses
-an explicit bounded loop rather than LangGraph or another agent framework. Open-
-vocabulary detection, SAM/segmentation, tracking, GeoTIFF/GIS processing, RAG,
-memory and fine-tuning are not implemented.
+an explicit bounded loop rather than LangGraph or another agent framework. Tracking,
+GeoTIFF/GIS processing, RAG, memory and fine-tuning are not implemented.
 
 ## Architecture
 
@@ -31,6 +31,11 @@ memory and fine-tuning are not implemented.
 
     detect_objects Tool -> DetectorManager -> one lazy YOLO11s COCO instance
                                            -> detections + annotated.jpg
+
+    detect_open_vocab Tool -> OpenVocabularyDetectorManager -> lazy YOLOE-26s-seg
+                                                        -> text boxes + preview
+    segment_objects Tool -> SegmentationManager -> lazy SAM 2.1 Base
+                                               -> PNG masks + overlay + pixel area
 
 Model code never returns FastAPI responses. InferenceResult belongs to the model
 layer and `analyze_image` converts it to the shared ToolResult contract.
@@ -49,7 +54,8 @@ error observations, and no stored or displayed chain-of-thought.
 - PyTorch 2.10.0+cu128 and torchvision 0.25.0+cu128
 - Transformers 5.17.0, Accelerate 1.15.0
 - qwen-vl-utils 0.0.14
-- Ultralytics 8.4.148 with YOLO11s COCO weights
+- Ultralytics 8.4.148 with YOLO11s, YOLOE-26s-seg, and SAM 2.1 Base weights
+- Ultralytics CLIP revision `a13192f8cb767260d7dfd98c843b0716593169e7`
 - SDPA attention, BF16, cuda:0
 
 Transformers 5.17.0 satisfies the model's official requirement of 4.57.0 or
@@ -79,6 +85,12 @@ The local model is:
 The detector checkpoint is:
 
     E:\sht\DEMO\GeoAgent\models\object_detection\yolo11s.pt
+
+The Phase 5 checkpoints are:
+
+    E:\sht\DEMO\GeoAgent\models\open_vocabulary\yoloe-26s-seg.pt
+    E:\sht\DEMO\GeoAgent\models\open_vocabulary\mobileclip2_b.ts
+    E:\sht\DEMO\GeoAgent\models\segmentation\sam2.1_b.pt
 
 The Hugging Face cache is:
 
@@ -131,6 +143,13 @@ Download the fixed YOLO11s checkpoint separately:
 The script writes only below configured `MODEL_DIR`. YOLO11s is a mature
 Ultralytics production model with COCO pretrained closed-set detection weights.
 
+Prepare or validate all Phase 5 assets on E:\ with:
+
+    .\.venv\Scripts\python.exe -m scripts.download_phase5_models
+
+Normal application startup stays offline. YOLOE text embeddings are produced from
+the local MobileCLIP2 file; SAM receives local detector boxes as prompts.
+
 ## Run FastAPI and Gradio
 
 Use two PowerShell windows:
@@ -157,6 +176,11 @@ Detector endpoints:
 - POST /api/v1/models/detector/load
 - POST /api/v1/models/detector/unload
 
+Phase 5 model endpoints:
+
+- GET/POST `/api/v1/models/open-vocabulary/status|load|unload`
+- GET/POST `/api/v1/models/segmentation/status|load|unload`
+
 Tool endpoints:
 
 - GET /api/v1/tools
@@ -169,8 +193,9 @@ Agent endpoints:
 - POST /api/v1/agent/run
 - GET /api/v1/agent/executions?limit=20
 
-The registry contains `inspect_image`, `crop_image`, `analyze_image`, and
-`detect_objects`. Each exposes a Pydantic JSON Schema. ToolExecutor validates
+The registry contains `inspect_image`, `crop_image`, `analyze_image`,
+`detect_objects`, `detect_open_vocab`, and `segment_objects`. Each exposes a
+Pydantic JSON Schema. ToolExecutor validates
 inputs, generates an execution ID, records duration, isolates failures, returns a
 ToolResult, and keeps the latest 50 safe in-memory trace records. Crop artifacts
 are written below `E:\sht\DEMO\GeoAgent\outputs\tools`; image bytes are never put
@@ -183,6 +208,15 @@ confidence, and original-image `xyxy` pixel coordinates. Every successful call,
 including an empty result, writes `annotated.jpg` under the Tool output directory.
 DetectorManager lazy-loads once, reuses the same instance, runs only on `cuda:0`,
 and can release its weights independently from Qwen.
+
+`detect_open_vocab` accepts one or more English text labels and returns stable
+detection IDs, requested classes, counts, confidence, and original pixel `xyxy`
+boxes. `segment_objects` accepts explicit boxes in the same image coordinate space,
+writes one grayscale PNG per instance plus a combined overlay, and reports mask
+pixels and image-area ratio. Detector previews are display-only; the Agent propagates
+the actual image path and exact boxes. A zero detection result ends without loading
+SAM. The four model managers are lazy, reusable, independently unloadable, and fixed
+to `cuda:0` without CPU fallback.
 
 The infer endpoint accepts multipart image, prompt and max_new_tokens. Supported
 formats are PNG, JPEG/JPG and WEBP. max_new_tokens is limited to 64–512.
@@ -224,6 +258,8 @@ With FastAPI and Gradio running:
     .\.venv\Scripts\python.exe -m scripts.verify_ui
     .\.venv\Scripts\python.exe -m scripts.verify_phase4_api
     .\.venv\Scripts\python.exe -m scripts.verify_phase4_ui
+    .\.venv\Scripts\python.exe -m scripts.verify_phase5_api
+    .\.venv\Scripts\python.exe -m scripts.verify_phase5_ui
 
 The integration suite includes real Qwen Agent decisions for a metadata-only task,
 a semantic-analysis task, and a multi-step inspect/crop/analyze task. It verifies
@@ -240,6 +276,11 @@ Phase 4 integration additionally covers two COCO photos, five repeated detection
 class filtering, detector reuse, detection-only Agent routing, detect-then-analyze,
 crop-to-detect artifact propagation, annotated previews, and simultaneous Qwen +
 YOLO residency. See `docs/phase4-validation.md` for measured results.
+
+Phase 5 integration covers five real YOLOE-to-SAM executions, prompt reuse, crop
+coordinate propagation, zero-target short circuiting, four real Qwen Agent workflows,
+mask artifacts, all four models resident together, and socket-blocked offline loads.
+See `docs/phase5-validation.md` for measured results and live API/UI evidence.
 
 ## Benchmark
 
@@ -265,4 +306,4 @@ weight formats, large TIFF files and logs are ignored. The small sample images a
 original project assets. Do not commit user images, credentials, model files,
 Hub cache, benchmark output or datasets.
 
-No commit or push is performed by the Phase 4 workflow.
+No commit or push is performed by the Phase 5 workflow.

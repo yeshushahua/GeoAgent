@@ -1,12 +1,12 @@
 # GeoAgent Tool System
 
-Phase 2 adds a uniform tool boundary for future agent work. It remains a manually
-invoked, tool-enabled multimodal system; it does not contain a planner, autonomous
-tool selection, ReAct, LangGraph, or agent reasoning.
+The Phase 2 boundary now supports the Phase 5 bounded Vision Agent. Qwen3-VL chooses
+from registry-generated definitions at runtime; the executor remains the only route
+to tools. No dispatcher contains a task-keyword table.
 
 ## Runtime path
 
-    Future Agent
+    VisionAgent / manual API
          |
          v
     ToolRegistry -- discovery definitions and Pydantic JSON Schema
@@ -23,7 +23,7 @@ tool selection, ReAct, LangGraph, or agent reasoning.
          v
     ToolResult and Artifact
 
-The UI and a future agent depend on the Tool API and tool contracts. They do not
+The UI and Agent depend on the Tool API and tool contracts. They do not
 need to import `ModelManager` or the Qwen wrapper. The Phase 1 model endpoints stay
 available for lifecycle control, debugging, and benchmarks.
 
@@ -53,6 +53,19 @@ type, absolute path, and MIME type; binary image data is never embedded in JSON.
 - `detect_objects` auto-loads one reusable YOLO11s COCO detector through the
   independent `DetectorManager`, returns structured class/count/confidence/bbox
   data, and writes `annotated.jpg` as an Artifact.
+- `detect_open_vocab` auto-loads one reusable YOLOE-26s-seg detector, encodes one
+  or more local English text prompts with MobileCLIP2, returns exact source-image
+  boxes, and writes a display-only `open-vocab-annotated.jpg` Artifact.
+- `segment_objects` auto-loads one reusable SAM 2.1 Base model and accepts only
+  explicit pixel bounding-box prompts. It returns per-instance mask area in pixels
+  and image-area ratio, writes individual grayscale PNG masks, and writes one
+  combined overlay.
+
+Qwen3-VL, YOLO11s, YOLOE, and SAM each have an independent manager and lifecycle.
+All are lazy-loaded, reused after the first load, fixed to `cuda:0`, and independently
+unloadable. YOLOE caches the active class signature, so an unchanged prompt set is
+not re-encoded. A zero-target observation stops a requested detection-to-segmentation
+workflow before SAM is loaded.
 
 Uploaded names never form output paths. Tool API uploads receive generated UUID
 names in the configured E-drive temporary directory and are removed after each
@@ -69,5 +82,5 @@ Execution accepts multipart image uploads and tool-specific form fields. A trust
 image reference inside the configured project or storage root can also be supplied
 as `image_path`.
 
-Future phases can register segmentation and geospatial tools without adding
-dispatch branches to the executor.
+Future geospatial tools can register through the same boundary without dispatch
+branches in the executor.

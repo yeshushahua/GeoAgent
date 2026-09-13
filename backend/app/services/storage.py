@@ -1,4 +1,5 @@
 """Fail closed when configured asset storage is unavailable."""
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -30,6 +31,7 @@ def prepare_storage(settings: Settings) -> None:
         "HF_ASSETS_CACHE": str(settings.hf_home / "assets"),
         "HF_DATASETS_CACHE": str(settings.hf_home / "datasets"),
         "YOLO_CONFIG_DIR": str(settings.detector_config_dir),
+        "YOLO_OFFLINE": "true",
         "GRADIO_TEMP_DIR": str(settings.temp_dir / "gradio"),
         "GRADIO_ANALYTICS_ENABLED": "False",
         "TMP": str(settings.temp_dir),
@@ -37,3 +39,21 @@ def prepare_storage(settings: Settings) -> None:
         "TMPDIR": str(settings.temp_dir),
     })
     tempfile.tempdir = str(settings.temp_dir)
+    # Ultralytics resolves auxiliary text encoders from weights_dir. Write its
+    # config before the library is imported so startup does not patch Pillow or
+    # initialize optional model code.
+    settings_file = settings.detector_config_dir / "Ultralytics" / "settings.json"
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = json.loads(settings_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = {"settings_version": "0.0.8"}
+    current.update({
+        "weights_dir": str(settings.open_vocab_model_path.parent),
+        "datasets_dir": str(settings.dataset_dir),
+        "runs_dir": str(settings.output_dir / "ultralytics"),
+        "sync": False,
+    })
+    pending = settings_file.with_suffix(".tmp")
+    pending.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    pending.replace(settings_file)

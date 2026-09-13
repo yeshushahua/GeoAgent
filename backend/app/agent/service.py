@@ -241,7 +241,8 @@ class VisionAgent:
                 summary["prompt_length"] = len(value)
                 detection_observations = sum(
                     1 for item in state.observations
-                    if item.tool_name == "detect_objects" and item.result.success
+                    if item.tool_name in {"detect_objects", "detect_open_vocab"}
+                    and item.result.success
                 )
                 if detection_observations:
                     summary["detection_observation_count"] = detection_observations
@@ -265,7 +266,16 @@ class VisionAgent:
             "inspect_image": {"width", "height", "mode", "format", "file_size", "aspect_ratio"},
             "crop_image": {"width", "height"},
             "detect_objects": {
-                "image_width", "image_height", "detection_count", "class_counts", "detections"
+                "source_image_path", "image_width", "image_height", "detection_count",
+                "class_counts", "detections"
+            },
+            "detect_open_vocab": {
+                "source_image_path", "image_width", "image_height", "requested_classes",
+                "detection_count", "class_counts", "detections",
+            },
+            "segment_objects": {
+                "image_width", "image_height", "segment_count", "segments",
+                "overlay_artifact_path",
             },
         }.get(result.tool, set())
         return {key: value for key, value in result.data.items() if key in allowed}

@@ -15,6 +15,11 @@ from backend.app.detection.schemas import BoundingBox, Detection
 from backend.app.schemas.inference import GenerationInfo, GpuMemory, ImageInfo, InferenceResult
 from backend.app.tools import build_tool_system
 from backend.tests.test_detect_objects_tool import FakeDetector
+from backend.app.open_vocabulary.schemas import OpenVocabularyDetection
+from backend.tests.test_phase5_tools import (
+    FakeOpenVocabularyManager,
+    FakeSegmentationManager,
+)
 
 
 class FakeAgentManager:
@@ -69,10 +74,14 @@ def source_image(settings, size=(40, 20)):
     return path
 
 
-def make_agent(settings, planner, detector_manager=None):
+def make_agent(
+    settings, planner, detector_manager=None,
+    open_vocab_manager=None, segmentation_manager=None,
+):
     manager = FakeAgentManager(settings)
     registry, executor, _ = build_tool_system(
-        settings, manager, logging.getLogger("test"), detector_manager
+        settings, manager, logging.getLogger("test"), detector_manager,
+        open_vocab_manager, segmentation_manager,
     )
     traces = AgentTraceStore(50)
     return VisionAgent(
@@ -98,7 +107,8 @@ async def test_dynamic_discovery_single_tool_and_final(settings):
     assert [step.tool_name for step in response.steps if step.tool_name] == ["inspect_image"]
     assert manager.load_calls == 1
     assert planner.calls[0]["definitions"] == [
-        "analyze_image", "crop_image", "detect_objects", "inspect_image"
+        "analyze_image", "crop_image", "detect_objects", "detect_open_vocab",
+        "inspect_image", "segment_objects",
     ]
     trace = traces.list()[0].model_dump()
     assert trace["prompt_length"] == len("告诉我尺寸")
@@ -262,6 +272,129 @@ async def test_crop_artifact_is_passed_to_detect_objects(settings):
     assert detector.calls[0][0] == Path(crop_artifact)
     assert response.steps[2].arguments_summary["image_path"] == "crop.png"
     assert Path(response.artifacts[-1].path).name == "annotated.jpg"
+
+
+@pytest.mark.anyio
+async def test_open_vocab_bbox_is_passed_to_sam(settings):
+    path = source_image(settings, (100, 60))
+    bbox = BoundingBox(x1=5, y1=4, x2=45, y2=40)
+    open_vocab = FakeOpenVocabularyManager([
+        OpenVocabularyDetection(
+            detection_id="detection-001", class_name="yellow safety helmet",
+            confidence=0.91, bbox=bbox,
+        )
+    ])
+    segmentation = FakeSegmentationManager()
+
+    def segment_detection(state):
+        observation = state.observations[-1].result.data
+        assert observation["detection_count"] == 1
+        return tool_call("segment_objects", {
+            "image_path": str(path),
+            "boxes": [observation["detections"][0]["bbox"]],
+        })
+
+    planner = ScriptedPlanner([
+        tool_call("detect_open_vocab", {
+            "image_path": str(path), "classes": ["yellow safety helmet"],
+        }),
+        segment_detection,
+        '{"type":"final","answer":"找到并分割了 1 顶黄色安全帽。"}',
+    ])
+    agent, _, _ = make_agent(
+        settings, planner, open_vocab_manager=open_vocab,
+        segmentation_manager=segmentation,
+    )
+    response = await agent.run(AgentRequest(
+        message="找到黄色安全帽并精确分割", image_path=str(path)
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "detect_open_vocab", "segment_objects"
+    ]
+    assert segmentation.calls[0][0] == path
+    assert segmentation.calls[0][1] == [bbox]
+    assert response.steps[1].arguments_summary["boxes"] == [bbox.model_dump()]
+    assert response.steps[1].observation_summary["segment_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_crop_propagates_to_open_vocab_and_sam(settings):
+    path = source_image(settings, (480, 300))
+    bbox = BoundingBox(x1=10, y1=8, x2=80, y2=70)
+    open_vocab = FakeOpenVocabularyManager([
+        OpenVocabularyDetection(
+            detection_id="detection-001", class_name="yellow safety helmet",
+            confidence=0.83, bbox=bbox,
+        )
+    ])
+    segmentation = FakeSegmentationManager()
+
+    def detect_crop(state):
+        crop_path = state.observations[-1].result.artifacts[0].path
+        return tool_call("detect_open_vocab", {
+            "image_path": crop_path, "classes": ["yellow safety helmet"],
+        })
+
+    def segment_crop(state):
+        detection = state.observations[-1].result.data
+        crop_path = state.observations[-2].result.artifacts[0].path
+        return tool_call("segment_objects", {
+            "image_path": crop_path,
+            "boxes": [item["bbox"] for item in detection["detections"]],
+        })
+
+    planner = ScriptedPlanner([
+        tool_call("inspect_image", {"image_path": str(path)}),
+        tool_call("crop_image", {
+            "image_path": str(path), "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+        }),
+        detect_crop,
+        segment_crop,
+        '{"type":"final","answer":"裁剪区域中的目标已分割。"}',
+    ])
+    agent, _, _ = make_agent(
+        settings, planner, open_vocab_manager=open_vocab,
+        segmentation_manager=segmentation,
+    )
+    response = await agent.run(AgentRequest(
+        message="裁剪左上四分之一，寻找黄色安全帽并分割", image_path=str(path)
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "inspect_image", "crop_image", "detect_open_vocab", "segment_objects"
+    ]
+    crop_path = Path(response.steps[1].artifacts[0].path)
+    assert open_vocab.calls[0][0] == crop_path
+    assert segmentation.calls[0][0] == crop_path
+    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
+    assert response.steps[3].arguments_summary["image_path"] == "crop.png"
+
+
+@pytest.mark.anyio
+async def test_zero_open_vocab_detection_does_not_call_sam(settings):
+    path = source_image(settings, (100, 60))
+    open_vocab = FakeOpenVocabularyManager()
+    segmentation = FakeSegmentationManager()
+    planner = ScriptedPlanner([
+        tool_call("detect_open_vocab", {
+            "image_path": str(path), "classes": ["invisible violet turbine"],
+        }),
+        '{"type":"final","answer":"未检测到指定目标。"}',
+    ])
+    agent, _, _ = make_agent(
+        settings, planner, open_vocab_manager=open_vocab,
+        segmentation_manager=segmentation,
+    )
+    response = await agent.run(AgentRequest(
+        message="找出不存在的紫色涡轮并分割", image_path=str(path)
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "detect_open_vocab"
+    ]
+    assert response.steps[0].observation_summary["detection_count"] == 0
+    assert segmentation.calls == []
 
 
 @pytest.mark.anyio

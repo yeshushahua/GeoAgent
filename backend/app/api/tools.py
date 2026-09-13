@@ -27,6 +27,18 @@ ERROR_STATUS = {
     "DETECTOR_LOAD_FAILED": 500,
     "DETECTOR_INFERENCE_FAILED": 500,
     "UNSUPPORTED_DETECTION_CLASS": 422,
+    "OPEN_VOCAB_CUDA_UNAVAILABLE": 503,
+    "OPEN_VOCAB_FILES_MISSING": 503,
+    "OPEN_VOCAB_BUSY": 409,
+    "OPEN_VOCAB_LOAD_FAILED": 500,
+    "OPEN_VOCAB_INFERENCE_FAILED": 500,
+    "INVALID_OPEN_VOCAB_CLASSES": 422,
+    "SEGMENTATION_CUDA_UNAVAILABLE": 503,
+    "SEGMENTATION_FILES_MISSING": 503,
+    "SEGMENTATION_BUSY": 409,
+    "SEGMENTATION_LOAD_FAILED": 500,
+    "SEGMENTATION_INFERENCE_FAILED": 500,
+    "INVALID_SEGMENTATION_PROMPT": 422,
 }
 
 
@@ -66,6 +78,7 @@ async def execute_tool(
     confidence: str | None = Form(default=None),
     iou_threshold: str | None = Form(default=None),
     classes: str | None = Form(default=None),
+    boxes: str | None = Form(default=None),
 ):
     temporary: Path | None = None
     try:
@@ -81,6 +94,12 @@ async def execute_tool(
                     int(item) if item.strip().isdigit() else item.strip()
                     for item in classes.split(",") if item.strip()
                 ]
+        parsed_boxes = None
+        if boxes is not None:
+            try:
+                parsed_boxes = json.loads(boxes)
+            except json.JSONDecodeError:
+                parsed_boxes = None
         raw = {
             "image_path": image_path,
             "prompt": prompt,
@@ -92,6 +111,7 @@ async def execute_tool(
             "confidence": confidence,
             "iou_threshold": iou_threshold,
             "classes": parsed_classes,
+            "boxes": parsed_boxes,
         }
         try:
             tool = request.app.state.tool_registry.get(tool_name)

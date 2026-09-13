@@ -28,7 +28,7 @@ def test_analysis_boundary_uses_tool_api_only():
     assert "/models/vlm/infer" not in source
 
 
-def test_agent_panel_shows_detection_summary():
+def test_agent_panel_shows_detection_and_segmentation_summary():
     panel = _agent_markdown({
         "run_id": "run-1",
         "steps": [{
@@ -37,8 +37,22 @@ def test_agent_panel_shows_detection_summary():
             "observation_summary": {
                 "detection_count": 5, "class_counts": {"bus": 1, "person": 4}
             },
+        }, {
+            "index": 2, "decision_type": "tool_call", "tool_name": "detect_open_vocab",
+            "success": True, "duration_ms": 20.0,
+            "observation_summary": {
+                "detection_count": 1, "class_counts": {"yellow safety helmet": 1}
+            },
+        }, {
+            "index": 3, "decision_type": "tool_call", "tool_name": "segment_objects",
+            "success": True, "duration_ms": 30.0,
+            "observation_summary": {
+                "segment_count": 1, "segments": [{"mask_area_ratio": 0.125}]
+            },
         }],
         "metadata": {},
     })
     assert "检测总数：**5**" in panel
     assert "bus × 1" in panel and "person × 4" in panel
+    assert "开放检测总数：**1**" in panel and "yellow safety helmet × 1" in panel
+    assert "分割实例：**1**" in panel and "12.50%" in panel

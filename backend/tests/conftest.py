@@ -31,10 +31,13 @@ def settings(tmp_path, monkeypatch):
         vlm_model_path=storage / "models" / "Qwen3-VL-4B-Instruct",
         detector_model_path=storage / "models" / "object_detection" / "yolo11s.pt",
         detector_config_dir=storage / "cache" / "ultralytics",
+        open_vocab_model_path=storage / "models" / "open_vocabulary" / "yoloe-26s-seg.pt",
+        open_vocab_text_encoder_path=storage / "models" / "open_vocabulary" / "mobileclip2_b.ts",
+        segmentation_model_path=storage / "models" / "segmentation" / "sam2.1_b.pt",
     )
     # Restore process-global cache/temp configuration after each test.
     for key in ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", "HF_HOME", "HF_HUB_CACHE", "HF_ASSETS_CACHE", "HF_DATASETS_CACHE",
-                "YOLO_CONFIG_DIR", "GRADIO_TEMP_DIR", "GRADIO_ANALYTICS_ENABLED", "TMP", "TEMP", "TMPDIR"):
+                "YOLO_CONFIG_DIR", "YOLO_OFFLINE", "GRADIO_TEMP_DIR", "GRADIO_ANALYTICS_ENABLED", "TMP", "TEMP", "TMPDIR"):
         monkeypatch.setenv(key, "test-original")
     monkeypatch.setattr(tempfile, "tempdir", tempfile.tempdir)
     return config
