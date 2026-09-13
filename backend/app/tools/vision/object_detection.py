@@ -85,6 +85,7 @@ class DetectObjectsTool(BaseTool):
             raise DetectorLoadError("Detector manager is not configured")
         path, image, _ = open_supported_image(context, inputs.image_path)
         try:
+            load_count_before = context.detector_manager.load_count
             run = await anyio.to_thread.run_sync(partial(
                 context.detector_manager.predict,
                 path,
@@ -114,6 +115,10 @@ class DetectObjectsTool(BaseTool):
                     "model": run.model,
                     "device": run.device,
                     "detector_load_time_s": run.load_time_s,
+                    "model_load_ms": (
+                        (run.load_time_s or 0) * 1000
+                        if context.detector_manager.load_count > load_count_before else 0
+                    ),
                     "detector_inference_ms": run.inference_ms,
                     "detector_load_count": context.detector_manager.load_count,
                     "gpu_allocated_gb": run.gpu.allocated_gb,

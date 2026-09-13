@@ -39,6 +39,7 @@ class OpenVocabularyRun(BaseModel):
     text_encoder: str
     device: str
     load_time_s: float | None = Field(default=None, ge=0)
+    effective_prompts: list[str] = Field(default_factory=list)
     prompt_encoding_ms: float = Field(ge=0)
     inference_ms: float = Field(ge=0)
     prediction: OpenVocabularyPrediction

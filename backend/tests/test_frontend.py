@@ -1,8 +1,12 @@
 import inspect
+import json
 
 import httpx
 
-from frontend.app import PLACEHOLDER, _agent_markdown, _post_agent, analyze, chat, fetch_status
+from frontend.app import (
+    PLACEHOLDER, _agent_markdown, _post_agent, analyze, build_manual_form_fields,
+    chat, fetch_status, manual_parameter_visibility, manual_tool_definitions,
+)
 
 
 def test_chat_placeholder():
@@ -56,3 +60,37 @@ def test_agent_panel_shows_detection_and_segmentation_summary():
     assert "bus × 1" in panel and "person × 4" in panel
     assert "开放检测总数：**1**" in panel and "yellow safety helmet × 1" in panel
     assert "分割实例：**1**" in panel and "12.50%" in panel
+
+
+def test_manual_tool_fields_are_driven_by_registry_schema():
+    definitions = manual_tool_definitions()
+    assert set(definitions) == {
+        "inspect_image", "crop_image", "analyze_image", "detect_objects",
+        "detect_open_vocab", "segment_objects",
+    }
+    expected = {
+        "inspect_image": set(),
+        "crop_image": {"x1", "y1", "x2", "y2"},
+        "analyze_image": {"prompt", "max_new_tokens"},
+        "detect_objects": {"classes", "confidence", "iou_threshold"},
+        "detect_open_vocab": {"classes", "confidence", "iou_threshold"},
+        "segment_objects": {"boxes"},
+    }
+    for name, fields in expected.items():
+        visible = manual_parameter_visibility(definitions[name])
+        assert {key for key, shown in visible.items() if shown} == fields
+
+
+def test_manual_form_serializes_only_selected_tool_schema():
+    definition = manual_tool_definitions()["detect_open_vocab"]
+    fields = build_manual_form_fields(definition, {
+        "prompt": "ignored", "max_new_tokens": 512,
+        "classes": "a person wearing a yellow helmet, excavator",
+        "confidence": 0.25, "iou_threshold": 0.45,
+        "x1": 1, "y1": 2, "x2": 3, "y2": 4, "boxes": "[]",
+    })
+    assert json.loads(fields["classes"]) == [
+        "a person wearing a yellow helmet", "excavator"
+    ]
+    assert fields["confidence"] == 0.25 and fields["iou_threshold"] == 0.45
+    assert not {"prompt", "max_new_tokens", "x1", "boxes"}.intersection(fields)

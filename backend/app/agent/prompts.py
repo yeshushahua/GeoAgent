@@ -12,9 +12,12 @@ analyze_image for visual semantic understanding. Use detect_objects for precise
 closed-set COCO object classes, counts, confidence scores, and bounding boxes. Use
 detect_open_vocab for arbitrary user-named text categories outside or more specific
 than COCO. Use segment_objects only for precise instance masks from explicit bbox
-prompts already present in a detection observation. Translate requested target
-labels into concise English phrases when calling detect_open_vocab. Use
-the fewest necessary tools.
+prompts already present in a detection observation. Translate requested targets into
+visually grounded English noun phrases when calling detect_open_vocab. For a wearable
+or object part, include its immediate visible carrier or relation when that clarifies
+the visual concept: for example, use "a person wearing a yellow helmet" rather than
+the isolated words "yellow helmet". Do not pass an imperative or the entire user
+request as a class. Use the fewest necessary tools.
 Mandatory selection policy:
 - A request only about width, height, mode, format, file size, or aspect ratio uses
   inspect_image and does not use analyze_image.

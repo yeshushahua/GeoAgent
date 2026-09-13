@@ -13,6 +13,18 @@ from backend.app.tools.vision import (
 )
 
 
+def build_tool_registry():
+    """Create the canonical registry used by the API, Agent, and manual UI."""
+    registry = ToolRegistry()
+    registry.register(InspectImageTool())
+    registry.register(CropImageTool())
+    registry.register(AnalyzeImageTool())
+    registry.register(DetectObjectsTool())
+    registry.register(DetectOpenVocabularyTool())
+    registry.register(SegmentObjectsTool())
+    return registry
+
+
 def build_tool_system(
     settings, model_manager, logger, detector_manager=None,
     open_vocab_manager=None, segmentation_manager=None,
@@ -29,13 +41,7 @@ def build_tool_system(
         from backend.app.segmentation import SegmentationManager
 
         segmentation_manager = SegmentationManager(settings, logger)
-    registry = ToolRegistry()
-    registry.register(InspectImageTool())
-    registry.register(CropImageTool())
-    registry.register(AnalyzeImageTool())
-    registry.register(DetectObjectsTool())
-    registry.register(DetectOpenVocabularyTool())
-    registry.register(SegmentObjectsTool())
+    registry = build_tool_registry()
     traces = ToolTraceStore(settings.tool_trace_limit)
     context = ToolContext(
         settings, model_manager, logger, traces, detector_manager,
@@ -44,4 +50,6 @@ def build_tool_system(
     return registry, ToolExecutor(registry, context), traces
 
 
-__all__ = ["ToolContext", "ToolExecutor", "ToolRegistry", "build_tool_system"]
+__all__ = [
+    "ToolContext", "ToolExecutor", "ToolRegistry", "build_tool_registry", "build_tool_system"
+]

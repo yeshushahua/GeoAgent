@@ -316,6 +316,61 @@ async def test_open_vocab_bbox_is_passed_to_sam(settings):
     assert segmentation.calls[0][1] == [bbox]
     assert response.steps[1].arguments_summary["boxes"] == [bbox.model_dump()]
     assert response.steps[1].observation_summary["segment_count"] == 1
+    assert response.steps[0].arguments_summary["classes"] == ["yellow safety helmet"]
+    assert response.steps[0].arguments_summary["confidence"] == 0.25
+    assert response.steps[0].arguments_summary["iou_threshold"] == 0.45
+    for step in response.steps:
+        assert step.duration_ms == pytest.approx(
+            step.planner_duration_ms + step.tool_duration_ms, abs=0.02
+        )
+    assert response.steps[0].model_inference_duration_ms == 8.0
+    assert response.steps[0].prompt_encoding_duration_ms == 12.0
+    metrics = response.metadata
+    assert metrics.total_duration_ms == pytest.approx(
+        metrics.planner_duration_ms + metrics.tool_duration_ms
+        + metrics.framework_overhead_ms,
+        abs=0.02,
+    )
+    assert metrics.model_inference_duration_ms == 28.0
+    assert metrics.prompt_encoding_duration_ms == 12.0
+    assert metrics.model_load_duration_ms == pytest.approx(
+        metrics.agent_model_load_duration_ms + metrics.tool_model_load_duration_ms,
+        abs=0.02,
+    )
+    assert metrics.framework_overhead_ms == pytest.approx(
+        metrics.agent_model_load_duration_ms + metrics.framework_runtime_overhead_ms,
+        abs=0.02,
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_and_manual_open_vocab_use_identical_effective_arguments(settings):
+    path = source_image(settings, (100, 60))
+    detection = OpenVocabularyDetection(
+        detection_id="detection-001", class_name="yellow helmet",
+        confidence=0.87, bbox=BoundingBox(x1=5, y1=4, x2=45, y2=40),
+    )
+    open_vocab = FakeOpenVocabularyManager([detection])
+    planner = ScriptedPlanner([
+        tool_call("detect_open_vocab", {
+            "image_path": str(path), "classes": ["yellow helmet"],
+        }),
+        '{"type":"final","answer":"检测到 1 顶黄色安全帽。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner, open_vocab_manager=open_vocab)
+    response = await agent.run(AgentRequest(
+        message="检测图中的 yellow helmet。", image_path=str(path)
+    ))
+    manual = await agent.executor.execute("detect_open_vocab", {
+        "image_path": str(path), "classes": ["yellow helmet"],
+        "confidence": 0.25, "iou_threshold": 0.45,
+    })
+    assert open_vocab.calls[0] == open_vocab.calls[1]
+    assert response.steps[0].arguments_summary == {
+        "image_path": "original_image", "classes": ["yellow helmet"],
+        "confidence": 0.25, "iou_threshold": 0.45,
+    }
+    assert response.steps[0].observation_summary["detections"] == manual.data["detections"]
 
 
 @pytest.mark.anyio

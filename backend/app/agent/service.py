@@ -89,6 +89,7 @@ class VisionAgent:
         )
         planner_ms = 0.0
         tool_ms = 0.0
+        agent_model_load_ms = 0.0
         allocated = 0.0
         peak = 0.0
         try:
@@ -101,7 +102,9 @@ class VisionAgent:
                 raise AgentModelError("Qwen3-VL is in ERROR state; unload it before retrying")
             if self.model_manager.state == ModelState.UNLOADED:
                 self.logger.info("[%s] Auto-loading Qwen3-VL for VisionAgent", run_id)
+                load_timer = time.perf_counter()
                 await anyio.to_thread.run_sync(self.model_manager.load_model)
+                agent_model_load_ms = (time.perf_counter() - load_timer) * 1000
 
             for index in range(1, request.max_steps + 1):
                 state.step_count = index
@@ -116,10 +119,12 @@ class VisionAgent:
                         decision_type="final",
                         success=True,
                         duration_ms=decision_ms,
+                        planner_duration_ms=decision_ms,
                         state_transition="DECIDING -> COMPLETED",
                     ))
                     return self._finish(
-                        state, timer, planner_ms, tool_ms, allocated, peak, success=True
+                        state, timer, planner_ms, tool_ms, allocated, peak, success=True,
+                        agent_model_load_ms=agent_model_load_ms,
                     )
 
                 signature = json.dumps(
@@ -151,6 +156,7 @@ class VisionAgent:
                         observation_summary=self._safe_observation(result),
                         success=False,
                         duration_ms=decision_ms,
+                        planner_duration_ms=decision_ms,
                         error_type=duplicate.code,
                         state_transition="DECIDING -> DUPLICATE_BLOCKED -> DECIDING",
                     ))
@@ -181,11 +187,21 @@ class VisionAgent:
                     index=index,
                     decision_type="tool_call",
                     tool_name=decision.tool_name,
-                    arguments_summary=self._safe_arguments(state, decision),
+                    arguments_summary=self._executed_arguments_summary(
+                        state, decision, result
+                    ),
                     observation_summary=self._safe_observation(result),
                     success=result.success,
                     execution_id=str(result.metadata.get("execution_id", "")) or None,
                     duration_ms=round(decision_ms + duration, 2),
+                    planner_duration_ms=round(decision_ms, 2),
+                    tool_duration_ms=round(duration, 2),
+                    model_load_duration_ms=float(result.metadata.get("model_load_ms", 0)),
+                    prompt_encoding_duration_ms=float(
+                        result.metadata.get("prompt_encoding_ms", 0)
+                    ),
+                    model_inference_duration_ms=float(result.metadata.get("inference_ms", 0)),
+                    tool_overhead_ms=float(result.metadata.get("tool_overhead_ms", 0)),
                     artifacts=result.artifacts,
                     error_type=result.error.type if result.error else None,
                     state_transition="DECIDING -> TOOL_EXECUTION -> OBSERVING -> DECIDING",
@@ -198,6 +214,7 @@ class VisionAgent:
             return self._finish(
                 state, timer, planner_ms, tool_ms, allocated, peak,
                 success=False, error=AgentErrorDetail(type=exc.code, message=str(exc)),
+                agent_model_load_ms=agent_model_load_ms,
             )
         except Exception:
             self.logger.exception("[%s] Unexpected agent failure", run_id)
@@ -207,6 +224,7 @@ class VisionAgent:
                 error=AgentErrorDetail(
                     type="AGENT_ERROR", message="Agent execution failed; see server log"
                 ),
+                agent_model_load_ms=agent_model_load_ms,
             )
 
     async def _decide(self, state: AgentState):
@@ -255,6 +273,19 @@ class VisionAgent:
                 summary[key] = value
         return summary
 
+    @classmethod
+    def _executed_arguments_summary(
+        cls, state: AgentState, call: AgentToolCall, result: ToolResult
+    ) -> dict:
+        """Merge executed defaults without losing Agent artifact/context markers."""
+        summary = cls._safe_arguments(state, call)
+        executed = result.metadata.get("arguments_summary", {})
+        if isinstance(executed, dict):
+            for key, value in executed.items():
+                if key not in {"image_path", "prompt_length"}:
+                    summary[key] = value
+        return summary
+
     @staticmethod
     def _safe_observation(result: ToolResult) -> dict:
         if not result.success:
@@ -278,7 +309,11 @@ class VisionAgent:
                 "overlay_artifact_path",
             },
         }.get(result.tool, set())
-        return {key: value for key, value in result.data.items() if key in allowed}
+        summary = {key: value for key, value in result.data.items() if key in allowed}
+        for key in ("source_image_path", "overlay_artifact_path"):
+            if isinstance(summary.get(key), str):
+                summary[key] = Path(summary[key]).name
+        return summary
 
     def _finish(
         self,
@@ -290,15 +325,23 @@ class VisionAgent:
         peak: float,
         success: bool,
         error: AgentErrorDetail | None = None,
+        agent_model_load_ms: float = 0.0,
     ) -> AgentResponse:
         state.finished_at = _utc_now()
-        state.duration_ms = round((time.perf_counter() - timer) * 1000, 2)
+        wall_duration_ms = (time.perf_counter() - timer) * 1000
+        # Preserve a coherent public breakdown even for injected planners whose
+        # reported latency can exceed their test-double wall time.
+        state.duration_ms = round(max(
+            wall_duration_ms, planner_ms + tool_ms + agent_model_load_ms
+        ), 2)
         state.status = "COMPLETED" if success else "FAILED"
         state.error = error
         if allocated == 0:
             memory = get_gpu_memory()
             allocated = memory.allocated_gb
             peak = max(peak, memory.peak_allocated_gb)
+        framework_stage_ms = max(0.0, state.duration_ms - planner_ms - tool_ms)
+        tool_model_load_ms = sum(step.model_load_duration_ms for step in state.steps)
         metadata = AgentMetadata(
             model="Qwen3-VL-4B-Instruct",
             device=self.model_manager.settings.vlm_device,
@@ -307,6 +350,20 @@ class VisionAgent:
             total_duration_ms=state.duration_ms,
             planner_duration_ms=round(planner_ms, 2),
             tool_duration_ms=round(tool_ms, 2),
+            framework_overhead_ms=round(framework_stage_ms, 2),
+            model_load_duration_ms=round(agent_model_load_ms + tool_model_load_ms, 2),
+            agent_model_load_duration_ms=round(agent_model_load_ms, 2),
+            tool_model_load_duration_ms=round(tool_model_load_ms, 2),
+            framework_runtime_overhead_ms=round(
+                max(0.0, framework_stage_ms - agent_model_load_ms), 2
+            ),
+            prompt_encoding_duration_ms=round(sum(
+                step.prompt_encoding_duration_ms for step in state.steps
+            ), 2),
+            model_inference_duration_ms=round(sum(
+                step.model_inference_duration_ms for step in state.steps
+            ), 2),
+            tool_overhead_ms=round(sum(step.tool_overhead_ms for step in state.steps), 2),
             allocated_vram_gib=round(allocated, 3),
             peak_vram_gib=round(peak, 3),
         )

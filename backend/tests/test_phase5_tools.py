@@ -137,6 +137,9 @@ async def test_open_vocab_tool_structured_output_artifact_and_zero_result(settin
     assert result.data["detections"][0]["detection_id"] == "detection-001"
     assert manager.calls[0][1:] == (["yellow safety helmet"], 0.3, 0.5)
     assert Path(result.artifacts[0].path).name == "open-vocab-annotated.jpg"
+    assert result.metadata["model_load_ms"] == 0
+    assert result.metadata["inference_ms"] == 8.0
+    assert result.metadata["tool_overhead_ms"] >= 0
     assert "base64" not in json.dumps(result.model_dump())
     manager.detections = []
     empty = await executor.execute("detect_open_vocab", {

@@ -44,13 +44,14 @@ def main():
     assert info["detector"]["state"] == "READY"
     assert info["detector"]["load_count"] == 1
 
-    summary, manual, manual_preview, manual_panel = client.predict(
-        "detect_objects", handle_file(str(source)), "unused", 64,
-        0, 0, 256, 256, api_name="/execute_tool"
+    summary, manual, manual_preview, manual_panel, manual_gallery = client.predict(
+        "detect_objects", handle_file(str(source)), "", 64, "", 0.25, 0.45,
+        0, 0, 256, 256, "[]", api_name="/execute_tool"
     )
     assert manual["success"] and manual["data"]["detection_count"] == 5
     assert "检测完成" in summary and "YOLO11s" in manual_panel
     assert manual_preview
+    assert not manual_gallery
 
     with httpx.Client(timeout=30, trust_env=False) as http:
         detector_unloaded = http.post(

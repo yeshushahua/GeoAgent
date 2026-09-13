@@ -10,9 +10,53 @@ from PIL import Image
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.logging import configure_logging
 from backend.app.services.storage import prepare_storage
+from backend.app.tools import build_tool_registry
 
 logger = logging.getLogger("geoagent")
 PLACEHOLDER = "GeoAgent 已就绪。"
+MANUAL_PARAMETER_ORDER = (
+    "prompt", "max_new_tokens", "classes", "confidence", "iou_threshold",
+    "x1", "y1", "x2", "y2", "boxes",
+)
+
+
+def manual_tool_definitions() -> dict[str, dict]:
+    return {item["name"]: item for item in build_tool_registry().list_tools()}
+
+
+def manual_parameter_visibility(definition: dict) -> dict[str, bool]:
+    properties = definition["input_schema"].get("properties", {})
+    return {name: name in properties for name in MANUAL_PARAMETER_ORDER}
+
+
+def _array_schema(schema: dict) -> bool:
+    return schema.get("type") == "array" or any(
+        item.get("type") == "array" for item in schema.get("anyOf", [])
+    )
+
+
+def build_manual_form_fields(definition: dict, values: dict) -> dict:
+    """Serialize only fields present in the selected tool's Pydantic JSON Schema."""
+    properties = definition["input_schema"].get("properties", {})
+    fields = {}
+    for name, schema in properties.items():
+        if name == "image_path" or name not in values:
+            continue
+        value = values[name]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if _array_schema(schema):
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = [item.strip() for item in value.split(",") if item.strip()]
+            if not isinstance(value, list):
+                raise ValueError(f"{name} 必须是 JSON 数组或逗号分隔列表")
+            fields[name] = json.dumps(value, ensure_ascii=False)
+        else:
+            fields[name] = value.strip() if isinstance(value, str) else value
+    return fields
 
 
 def _model_markdown(system: dict, model: dict) -> str:
@@ -121,12 +165,21 @@ def _tool_markdown(result: dict) -> str:
         "detect_open_vocab": " → YOLOE-26s",
         "segment_objects": " → SAM 2.1 Base",
     }.get(tool, "")
+    arguments = metadata.get("arguments_summary", {})
+    timing = []
+    timing.append(f"本次模型加载：**{metadata.get('model_load_ms', 0):.2f} ms**")
+    if metadata.get("prompt_encoding_ms", 0):
+        timing.append(f"提示编码：**{metadata['prompt_encoding_ms']:.2f} ms**")
+    timing.append(f"模型推理：**{metadata.get('inference_ms', 0):.2f} ms**")
+    timing.append(f"工具开销：**{metadata.get('tool_overhead_ms', 0):.2f} ms**")
+    timing_text = ("  \n" + " · ".join(timing)) if timing else ""
     return (
         "### 工具调用\n"
         f"Tool：**{tool}**  \n"
         f"状态：**{'成功' if success else '失败'}**  \n"
         f"Execution ID：`{metadata.get('execution_id', '-')}`  \n"
-        f"耗时：**{metadata.get('duration_ms', 0):.2f} ms**  \n\n"
+        f"Tool 总耗时：**{metadata.get('duration_ms', 0):.2f} ms**{timing_text}  \n"
+        f"安全参数：`{json.dumps(arguments, ensure_ascii=False)}`  \n\n"
         f"执行：`{tool}{model_step} → {'完成' if success else '失败'}`"
     )
 
@@ -169,7 +222,22 @@ def _agent_markdown(result: dict) -> str:
             continue
         tool = step.get("tool_name") or "调用已阻止"
         marker = "✓" if step.get("success") else "✗"
-        lines.append(f"{step['index']}. `{tool}` {marker} · {step.get('duration_ms', 0):.2f} ms")
+        lines.append(
+            f"{step['index']}. `{tool}` {marker} · 总计 {step.get('duration_ms', 0):.2f} ms "
+            f"（Planner {step.get('planner_duration_ms', 0):.2f} ms · "
+            f"Tool {step.get('tool_duration_ms', 0):.2f} ms）"
+        )
+        if step.get("tool_duration_ms", 0):
+            lines.append(
+                "   Tool 明细："
+                f"加载 {step.get('model_load_duration_ms', 0):.2f} ms · "
+                f"提示编码 {step.get('prompt_encoding_duration_ms', 0):.2f} ms · "
+                f"推理 {step.get('model_inference_duration_ms', 0):.2f} ms · "
+                f"开销 {step.get('tool_overhead_ms', 0):.2f} ms"
+            )
+        arguments = step.get("arguments_summary", {})
+        if arguments:
+            lines.append(f"   参数：`{json.dumps(arguments, ensure_ascii=False)}`")
         if tool == "detect_objects" and step.get("success"):
             observation = step.get("observation_summary", {})
             counts = observation.get("class_counts", {})
@@ -194,7 +262,14 @@ def _agent_markdown(result: dict) -> str:
         "",
         f"总耗时：**{metadata.get('total_duration_ms', 0):.2f} ms** · "
         f"Planner：**{metadata.get('planner_duration_ms', 0):.2f} ms** · "
-        f"Tools：**{metadata.get('tool_duration_ms', 0):.2f} ms**",
+        f"Tools：**{metadata.get('tool_duration_ms', 0):.2f} ms** · "
+        f"框架阶段：**{metadata.get('framework_overhead_ms', 0):.2f} ms**",
+        f"加载明细：Agent 模型 **{metadata.get('agent_model_load_duration_ms', 0):.2f} ms** · "
+        f"Tool 模型 **{metadata.get('tool_model_load_duration_ms', 0):.2f} ms** · "
+        f"框架其余开销 **{metadata.get('framework_runtime_overhead_ms', 0):.2f} ms**",
+        f"Tools 明细：提示编码 **{metadata.get('prompt_encoding_duration_ms', 0):.2f} ms** · "
+        f"推理 **{metadata.get('model_inference_duration_ms', 0):.2f} ms** · "
+        f"工具开销 **{metadata.get('tool_overhead_ms', 0):.2f} ms**",
     ])
     return "\n".join(lines)
 
@@ -252,20 +327,19 @@ def analyze(settings: Settings, image, prompt: str, max_new_tokens: int):
         yield f"后端不可用：{exc}", {}, status, details, "### Agent 执行过程\n请求未能执行。", image, []
 
 
-def execute_selected_tool(settings, tool_name, image, prompt, tokens, x1, y1, x2, y2):
+def execute_selected_tool(
+    settings, tool_name, image, prompt, tokens, classes, confidence, iou_threshold,
+    x1, y1, x2, y2, boxes,
+):
     if image is None:
         return "请先上传图像。", {}, None, "### 工具调用\n尚未执行。", []
-    fields = {
-        "prompt": prompt.strip() if prompt else None,
-        "max_new_tokens": int(tokens),
-        "x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2),
-    }
-    if tool_name == "detect_open_vocab":
-        classes = [item.strip() for item in (prompt or "").split(",") if item.strip()]
-        fields["classes"] = json.dumps(classes)
-    if tool_name == "segment_objects":
-        fields["boxes"] = json.dumps([{"x1": x1, "y1": y1, "x2": x2, "y2": y2}])
     try:
+        definition = manual_tool_definitions()[tool_name]
+        fields = build_manual_form_fields(definition, {
+            "prompt": prompt, "max_new_tokens": int(tokens), "classes": classes,
+            "confidence": confidence, "iou_threshold": iou_threshold,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2, "boxes": boxes,
+        })
         result = _post_tool(settings, tool_name, image, fields)
         preview = image
         if result.get("success") and result.get("artifacts"):
@@ -313,6 +387,18 @@ def build_ui(settings: Settings | None = None):
         existing = os.environ.get(key, "")
         os.environ[key] = ",".join(filter(None, [existing, "127.0.0.1", "localhost", "::1"]))
     import gradio as gr
+    definitions = manual_tool_definitions()
+
+    def manual_updates(tool_name):
+        definition = definitions[tool_name]
+        visibility = manual_parameter_visibility(definition)
+        help_text = (
+            f"**{tool_name}** — {definition['description']}\n\n"
+            f"Schema 字段：`{', '.join(definition['input_schema'].get('properties', {}))}`"
+        )
+        return [help_text] + [
+            gr.update(visible=visibility[name]) for name in MANUAL_PARAMETER_ORDER
+        ]
 
     def analyze_event(image, prompt, tokens):
         yield from analyze(settings, image, prompt, tokens)
@@ -349,18 +435,31 @@ def build_ui(settings: Settings | None = None):
         tool_execution = gr.Markdown("### Agent 执行过程\n尚未执行。")
         with gr.Accordion("高级 / 手动工具调试", open=False):
             tool_choice = gr.Dropdown(
-                [
-                    "inspect_image", "crop_image", "analyze_image", "detect_objects",
-                    "detect_open_vocab", "segment_objects",
-                ],
+                list(definitions),
                 value="inspect_image",
                 label="Tool",
             )
+            manual_help = gr.Markdown()
+            manual_prompt = gr.Textbox(label="prompt", value="描述这张图片。", visible=False)
+            manual_tokens = gr.Slider(
+                64, 512, value=settings.vlm_default_max_new_tokens, step=32,
+                label="max_new_tokens", visible=False,
+            )
+            manual_classes = gr.Textbox(
+                label="classes", placeholder="yellow helmet, excavator", visible=False,
+            )
             with gr.Row():
-                x1 = gr.Number(value=0, precision=0, label="x1")
-                y1 = gr.Number(value=0, precision=0, label="y1")
-                x2 = gr.Number(value=256, precision=0, label="x2")
-                y2 = gr.Number(value=256, precision=0, label="y2")
+                confidence = gr.Slider(0.01, 1.0, value=0.25, step=0.01, label="confidence", visible=False)
+                iou_threshold = gr.Slider(0.01, 1.0, value=0.45, step=0.01, label="iou_threshold", visible=False)
+            with gr.Row():
+                x1 = gr.Number(value=0, precision=0, label="x1", visible=False)
+                y1 = gr.Number(value=0, precision=0, label="y1", visible=False)
+                x2 = gr.Number(value=256, precision=0, label="x2", visible=False)
+                y2 = gr.Number(value=256, precision=0, label="y2", visible=False)
+            manual_boxes = gr.Textbox(
+                label="boxes", value='[{"x1": 0, "y1": 0, "x2": 256, "y2": 256}]',
+                lines=3, visible=False,
+            )
             run_tool = gr.Button("执行 Tool")
         with gr.Accordion("高级 / 调试信息", open=False):
             details = gr.JSON(label="系统 / 模型信息")
@@ -383,15 +482,29 @@ def build_ui(settings: Settings | None = None):
             [response, inference_details, status, details, tool_execution, result_image, mask_gallery],
             api_name="analyze",
         )
+        tool_choice.change(
+            manual_updates,
+            tool_choice,
+            [manual_help, manual_prompt, manual_tokens, manual_classes, confidence,
+             iou_threshold, x1, y1, x2, y2, manual_boxes],
+            api_name="manual_tool_schema",
+        )
         run_tool.click(
-            lambda tool, image, prompt, tokens, left, top, right, bottom: execute_selected_tool(
-                settings, tool, image, prompt, tokens, left, top, right, bottom
+            lambda tool, image, tool_prompt, tokens, classes, conf, iou, left, top, right, bottom, boxes: execute_selected_tool(
+                settings, tool, image, tool_prompt, tokens, classes, conf, iou,
+                left, top, right, bottom, boxes
             ),
-            [tool_choice, input_image, prompt, max_tokens, x1, y1, x2, y2],
+            [tool_choice, input_image, manual_prompt, manual_tokens, manual_classes,
+             confidence, iou_threshold, x1, y1, x2, y2, manual_boxes],
             [response, inference_details, result_image, tool_execution, mask_gallery],
             api_name="execute_tool",
         )
         demo.load(lambda: fetch_status(settings), outputs=[status, details])
+        demo.load(
+            lambda: manual_updates("inspect_image"),
+            outputs=[manual_help, manual_prompt, manual_tokens, manual_classes, confidence,
+                     iou_threshold, x1, y1, x2, y2, manual_boxes],
+        )
     return demo
 
 

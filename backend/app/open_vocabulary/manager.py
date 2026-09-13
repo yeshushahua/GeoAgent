@@ -61,6 +61,24 @@ def _normalize_classes(values: list[str]) -> list[str]:
     return normalized
 
 
+def _visual_prompt_variants(classes: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Build generic visual phrasings and retain stable user-facing class names."""
+    prompts: list[str] = []
+    canonical_by_prompt: dict[str, str] = {}
+    for canonical in classes:
+        words = canonical.split()
+        if words and words[0].casefold() in {"a", "an", "the"}:
+            base = " ".join(words[1:]).strip() or canonical
+        else:
+            base = canonical
+        for prompt in (canonical, f"a visible {base}", f"a photo of a {base}"):
+            key = prompt.casefold()
+            if key not in canonical_by_prompt:
+                prompts.append(prompt)
+                canonical_by_prompt[key] = canonical
+    return prompts, canonical_by_prompt
+
+
 class OpenVocabularyDetectorManager:
     def __init__(
         self,
@@ -80,6 +98,7 @@ class OpenVocabularyDetectorManager:
         self._load_count = 0
         self._prompt_count = 0
         self._active_classes: tuple[str, ...] | None = None
+        self._active_prompts: tuple[str, ...] | None = None
         self._lock = RLock()
 
     @property
@@ -105,6 +124,7 @@ class OpenVocabularyDetectorManager:
                 "load_count": self._load_count,
                 "prompt_count": self._prompt_count,
                 "active_classes": list(self._active_classes or ()),
+                "active_prompts": list(self._active_prompts or ()),
                 "last_error": self._last_error,
                 "gpu_memory": get_detector_gpu_memory().model_dump(),
             }
@@ -147,6 +167,7 @@ class OpenVocabularyDetectorManager:
                 self._load_time_s = round(time.perf_counter() - timer, 3)
                 self._load_count += 1
                 self._active_classes = None
+                self._active_prompts = None
                 self._state = OpenVocabularyState.READY
             except Exception as exc:
                 self._model = None
@@ -165,6 +186,7 @@ class OpenVocabularyDetectorManager:
                 self._model.to("cpu")
             self._model = None
             self._active_classes = None
+            self._active_prompts = None
             self._state = OpenVocabularyState.UNLOADED
             self._last_error = None
             self._load_time_s = None
@@ -183,6 +205,7 @@ class OpenVocabularyDetectorManager:
         iou_threshold: float = 0.45,
     ) -> OpenVocabularyRun:
         requested = _normalize_classes(classes)
+        effective_prompts, canonical_by_prompt = _visual_prompt_variants(requested)
         if self._state == OpenVocabularyState.UNLOADED:
             self.load_model()
         if not self._lock.acquire(blocking=False):
@@ -192,10 +215,11 @@ class OpenVocabularyDetectorManager:
                 raise OpenVocabularyLoadError("YOLOE is not ready")
             try:
                 prompt_timer = time.perf_counter()
-                signature = tuple(requested)
-                if signature != self._active_classes:
-                    self._model.set_classes(requested)
-                    self._active_classes = signature
+                signature = tuple(effective_prompts)
+                if signature != self._active_prompts:
+                    self._model.set_classes(effective_prompts)
+                    self._active_classes = tuple(requested)
+                    self._active_prompts = signature
                     self._prompt_count += 1
                     gc.collect()
                     if torch.cuda.is_available():
@@ -229,9 +253,12 @@ class OpenVocabularyDetectorManager:
                 ):
                     class_id = int(raw_class)
                     x1, y1, x2, y2 = (float(value) for value in coordinates)
+                    reported_name = str(names[class_id])
                     detections.append(OpenVocabularyDetection(
                         detection_id=f"detection-{index:03d}",
-                        class_name=str(names[class_id]),
+                        class_name=canonical_by_prompt.get(
+                            reported_name.casefold(), reported_name
+                        ),
                         confidence=round(float(score), 6),
                         bbox=BoundingBox(
                             x1=round(max(0.0, min(x1, width)), 2),
@@ -256,6 +283,7 @@ class OpenVocabularyDetectorManager:
                     text_encoder=self.settings.open_vocab_text_encoder_path.name,
                     device=self.settings.open_vocab_device,
                     load_time_s=self._load_time_s,
+                    effective_prompts=effective_prompts,
                     prompt_encoding_ms=prompt_ms,
                     inference_ms=inference_ms,
                     prediction=prediction,

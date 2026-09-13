@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from threading import Lock
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class ToolExecutionTrace(BaseModel):
@@ -14,6 +14,7 @@ class ToolExecutionTrace(BaseModel):
     started_at: str
     finished_at: str
     duration_ms: float = Field(ge=0)
+    arguments_summary: dict[str, JsonValue] = Field(default_factory=dict)
     prompt_length: int | None = Field(default=None, ge=0)
     error_type: str | None = None
 

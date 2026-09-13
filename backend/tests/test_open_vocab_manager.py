@@ -66,12 +66,20 @@ def test_yoloe_lazy_load_reuse_arbitrary_classes_and_structure(settings):
     assert manager.state == OpenVocabularyState.READY
     assert manager.load_count == 1
     assert manager.status()["prompt_count"] == 1
-    assert model.class_calls == [["yellow safety helmet", "tower crane"]]
+    assert model.class_calls == [[
+        "yellow safety helmet", "a visible yellow safety helmet",
+        "a photo of a yellow safety helmet", "tower crane",
+        "a visible tower crane", "a photo of a tower crane",
+    ]]
     assert first.prediction.detection_count == 2
     assert first.prediction.detections[0].detection_id == "detection-001"
     assert first.prediction.detections[0].bbox.x1 == 0
     assert first.prediction.class_counts == {"tower crane": 1, "yellow safety helmet": 1}
     assert second.prediction.requested_classes == ["yellow safety helmet", "tower crane"]
+    assert first.effective_prompts[:3] == [
+        "yellow safety helmet", "a visible yellow safety helmet",
+        "a photo of a yellow safety helmet",
+    ]
     assert all(0 <= item.confidence <= 1 for item in first.prediction.detections)
     assert model.predict_calls[0]["device"] == "cuda:0"
 
@@ -84,6 +92,16 @@ def test_yoloe_zero_detections_and_class_change(settings):
     manager.predict(image, ["another arbitrary phrase"])
     assert len(model.class_calls) == 2
     assert manager.status()["prompt_count"] == 2
+
+
+def test_yoloe_maps_prompt_variants_back_to_requested_class(settings):
+    result = FakeResult(FakeBoxes(
+        xyxy=[[2, 3, 40, 58]], confidence=[0.81], classes=[1],
+    ))
+    result.names = {1: "a visible yellow safety helmet"}
+    manager, _, image = prepare(settings, result)
+    run = manager.predict(image, ["yellow safety helmet"])
+    assert run.prediction.class_counts == {"yellow safety helmet": 1}
 
 
 def test_yoloe_missing_assets_and_unload(settings):

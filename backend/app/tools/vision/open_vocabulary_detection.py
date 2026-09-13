@@ -77,6 +77,7 @@ class DetectOpenVocabularyTool(BaseTool):
             raise OpenVocabularyLoadError("Open-vocabulary manager is not configured")
         path, image, _ = open_supported_image(context, inputs.image_path)
         try:
+            load_count_before = context.open_vocab_manager.load_count
             run = await anyio.to_thread.run_sync(partial(
                 context.open_vocab_manager.predict,
                 path,
@@ -107,6 +108,11 @@ class DetectOpenVocabularyTool(BaseTool):
                     "text_encoder": run.text_encoder,
                     "device": run.device,
                     "model_load_time_s": run.load_time_s,
+                    "model_load_ms": (
+                        (run.load_time_s or 0) * 1000
+                        if context.open_vocab_manager.load_count > load_count_before else 0
+                    ),
+                    "effective_prompts": run.effective_prompts,
                     "prompt_encoding_ms": run.prompt_encoding_ms,
                     "inference_ms": run.inference_ms,
                     "model_load_count": context.open_vocab_manager.load_count,

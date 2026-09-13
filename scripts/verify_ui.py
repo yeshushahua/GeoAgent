@@ -72,12 +72,13 @@ def main():
         assert crop.size == preview_image.size
         assert crop.convert("RGB").tobytes() == preview_image.convert("RGB").tobytes()
     assert info["model"]["state"] == "READY"
-    summary, inspect_result, inspect_preview, inspect_panel = client.predict(
-        "inspect_image", handle_file(str(source)), "unused", 64,
-        0, 0, 256, 256, api_name="/execute_tool"
+    summary, inspect_result, inspect_preview, inspect_panel, inspect_gallery = client.predict(
+        "inspect_image", handle_file(str(source)), "", 64, "", 0.25, 0.45,
+        0, 0, 256, 256, "[]", api_name="/execute_tool"
     )
     assert summary and inspect_result["data"]["width"] > 0
     assert inspect_preview and "成功" in inspect_panel
+    assert not inspect_gallery
     status, info = client.predict(api_name="/unload_model")
     assert info["model"]["state"] == "UNLOADED"
     output = {

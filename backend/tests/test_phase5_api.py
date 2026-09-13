@@ -60,6 +60,15 @@ def test_phase5_tool_api_parses_classes_and_boxes(client):
     assert detected.status_code == 200
     assert detected.json()["data"]["detection_count"] == 1
     assert open_vocab.calls[0][1] == ["yellow safety helmet"]
+    assert open_vocab.calls[0][2:] == (0.3, 0.45)
+    executed = detected.json()["metadata"]["arguments_summary"]
+    assert executed["classes"] == ["yellow safety helmet"]
+    assert executed["confidence"] == 0.3
+    assert executed["iou_threshold"] == 0.45
+    assert executed["image_path"]
+    assert "\\" not in executed["image_path"] and "/" not in executed["image_path"]
+    trace = client.get("/api/v1/tools/executions", params={"limit": 1}).json()[0]
+    assert trace["arguments_summary"] == executed
     segmented = client.post(
         "/api/v1/tools/segment_objects/execute",
         files={"image": ("scene.png", image_bytes(), "image/png")},
@@ -70,6 +79,25 @@ def test_phase5_tool_api_parses_classes_and_boxes(client):
     assert body["data"]["segment_count"] == 1
     assert [item["type"] for item in body["artifacts"]] == ["mask", "image"]
     assert segmentation.calls[0][1][0] == BoundingBox(x1=5, y1=4, x2=45, y2=40)
+
+
+def test_open_vocab_api_defaults_match_executor_defaults(client):
+    open_vocab, _ = install(client)
+    response = client.post(
+        "/api/v1/tools/detect_open_vocab/execute",
+        files={"image": ("scene.png", image_bytes(), "image/png")},
+        data={"classes": json.dumps(["a person wearing a yellow helmet"])},
+    )
+    assert response.status_code == 200
+    assert open_vocab.calls[0][1:] == (
+        ["a person wearing a yellow helmet"], 0.25, 0.45
+    )
+    assert response.json()["metadata"]["arguments_summary"] == {
+        "image_path": response.json()["metadata"]["arguments_summary"]["image_path"],
+        "classes": ["a person wearing a yellow helmet"],
+        "confidence": 0.25,
+        "iou_threshold": 0.45,
+    }
 
 
 def test_phase5_tool_api_rejects_bad_inputs(client):

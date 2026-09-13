@@ -47,6 +47,12 @@ class AgentStep(BaseModel):
     success: bool | None = None
     execution_id: str | None = None
     duration_ms: float = Field(default=0, ge=0)
+    planner_duration_ms: float = Field(default=0, ge=0)
+    tool_duration_ms: float = Field(default=0, ge=0)
+    model_load_duration_ms: float = Field(default=0, ge=0)
+    prompt_encoding_duration_ms: float = Field(default=0, ge=0)
+    model_inference_duration_ms: float = Field(default=0, ge=0)
+    tool_overhead_ms: float = Field(default=0, ge=0)
     artifacts: list[Artifact] = Field(default_factory=list)
     error_type: str | None = None
     state_transition: str
@@ -83,6 +89,14 @@ class AgentMetadata(BaseModel):
     total_duration_ms: float = Field(ge=0)
     planner_duration_ms: float = Field(ge=0)
     tool_duration_ms: float = Field(ge=0)
+    framework_overhead_ms: float = Field(ge=0)
+    model_load_duration_ms: float = Field(default=0, ge=0)
+    agent_model_load_duration_ms: float = Field(default=0, ge=0)
+    tool_model_load_duration_ms: float = Field(default=0, ge=0)
+    framework_runtime_overhead_ms: float = Field(default=0, ge=0)
+    prompt_encoding_duration_ms: float = Field(default=0, ge=0)
+    model_inference_duration_ms: float = Field(default=0, ge=0)
+    tool_overhead_ms: float = Field(default=0, ge=0)
     allocated_vram_gib: float = Field(ge=0)
     peak_vram_gib: float = Field(ge=0)
 

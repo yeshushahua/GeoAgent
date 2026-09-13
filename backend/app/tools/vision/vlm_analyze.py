@@ -38,6 +38,7 @@ class AnalyzeImageTool(BaseTool):
         _, image, _ = open_supported_image(context, inputs.image_path)
         try:
             state = context.model_manager.state
+            loaded_this_call = state == ModelState.UNLOADED
             if state == ModelState.UNLOADED:
                 context.logger.info("[%s] Auto-loading Qwen3-VL for analyze_image", execution_id)
                 await anyio.to_thread.run_sync(context.model_manager.load_model)
@@ -61,6 +62,10 @@ class AnalyzeImageTool(BaseTool):
                     "device": inference.device,
                     "dtype": inference.dtype,
                     "latency_ms": inference.latency_ms,
+                    "model_load_ms": (
+                        float(context.model_manager.status().get("load_time_s") or 0) * 1000
+                        if loaded_this_call else 0
+                    ),
                     "gpu_allocated_gb": inference.gpu.allocated_gb,
                     "gpu_reserved_gb": inference.gpu.reserved_gb,
                     "gpu_peak_gb": inference.gpu.peak_allocated_gb,
