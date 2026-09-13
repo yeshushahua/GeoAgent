@@ -3,27 +3,44 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 2 — Tool System Foundation.
+Current milestone: Phase 4 — Object Detection.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
-The user uploads one ordinary RGB image, sends a Chinese or English prompt through
-FastAPI, and receives a structured ToolResult with the answer, latency,
-preprocessing size and GPU memory. Gradio Analyze now calls the Tool API.
+The user uploads one ordinary RGB image and gives a natural-language task. A local
+Qwen3-VL policy model selects tools from registry-generated schemas, observes each
+ToolResult, optionally continues with another tool, and returns a structured final
+response. YOLO11s supplies closed-set COCO object classes, counts, confidence scores,
+pixel bounding boxes, and annotated images. The default Chinese UI calls the Agent API.
 
-This is a tool-enabled multimodal system, not an autonomous Agent. LangGraph,
-planning, autonomous tool selection, ReAct, YOLO, SAM, GeoTIFF/GIS processing,
-RAG and fine-tuning are not implemented.
+This is a small Tool-enabled Vision Agent with autonomous tool selection. It uses
+an explicit bounded loop rather than LangGraph or another agent framework. Open-
+vocabulary detection, SAM/segmentation, tracking, GeoTIFF/GIS processing, RAG,
+memory and fine-tuning are not implemented.
 
 ## Architecture
 
-    Gradio -> Tool API -> ToolExecutor -> ToolRegistry -> analyze_image
-                                                        |
-                                                        v
-    ToolResult <- InferenceResult <- ModelManager <- Qwen3-VL on cuda:0 BF16
+    Gradio -> Agent API -> VisionAgent -> Qwen decision (JSON)
+                                      -> ToolRegistry -> ToolExecutor -> Tool
+                                             ^                         |
+                                             `---- Observation --------'
+                                      -> Final answer
+
+    VisionAgent planner ----\
+                             > shared ModelManager -> one Qwen3-VL instance
+    analyze_image Tool -----/
+
+    detect_objects Tool -> DetectorManager -> one lazy YOLO11s COCO instance
+                                           -> detections + annotated.jpg
 
 Model code never returns FastAPI responses. InferenceResult belongs to the model
 layer and `analyze_image` converts it to the shared ToolResult contract.
 The application starts in UNLOADED state. Importing FastAPI does not load weights.
+
+Tool definitions are generated dynamically from `ToolRegistry` and each tool's
+Pydantic schema. The Agent output protocol accepts only a validated `tool_call` or
+`final` JSON object. Calls always pass through ToolExecutor. The loop has a six-step
+default limit, one bounded JSON repair, duplicate-call blocking, structured tool
+error observations, and no stored or displayed chain-of-thought.
 
 ## Verified environment
 
@@ -32,6 +49,7 @@ The application starts in UNLOADED state. Importing FastAPI does not load weight
 - PyTorch 2.10.0+cu128 and torchvision 0.25.0+cu128
 - Transformers 5.17.0, Accelerate 1.15.0
 - qwen-vl-utils 0.0.14
+- Ultralytics 8.4.148 with YOLO11s COCO weights
 - SDPA attention, BF16, cuda:0
 
 Transformers 5.17.0 satisfies the model's official requirement of 4.57.0 or
@@ -58,9 +76,17 @@ The local model is:
 
     E:\sht\DEMO\GeoAgent\models\Qwen3-VL-4B-Instruct
 
+The detector checkpoint is:
+
+    E:\sht\DEMO\GeoAgent\models\object_detection\yolo11s.pt
+
 The Hugging Face cache is:
 
     E:\sht\DEMO\GeoAgent\cache\huggingface
+
+Ultralytics settings/cache are rooted at:
+
+    E:\sht\DEMO\GeoAgent\cache\ultralytics
 
 Models, datasets, outputs, checkpoints, caches and temporary uploads never fall
 back to C or D. Startup validates absolute paths, separate drives, containment
@@ -98,6 +124,13 @@ then validates config, generation, processor, tokenizer and safetensors files.
 The normal .env remains offline. No HF token is required for this public model.
 Model weights must never be added to Git.
 
+Download the fixed YOLO11s checkpoint separately:
+
+    .\.venv\Scripts\python.exe -m scripts.download_yolo11s
+
+The script writes only below configured `MODEL_DIR`. YOLO11s is a mature
+Ultralytics production model with COCO pretrained closed-set detection weights.
+
 ## Run FastAPI and Gradio
 
 Use two PowerShell windows:
@@ -118,6 +151,12 @@ Model endpoints:
 - POST /api/v1/models/vlm/unload
 - POST /api/v1/models/vlm/infer
 
+Detector endpoints:
+
+- GET /api/v1/models/detector/status
+- POST /api/v1/models/detector/load
+- POST /api/v1/models/detector/unload
+
 Tool endpoints:
 
 - GET /api/v1/tools
@@ -125,12 +164,25 @@ Tool endpoints:
 - POST /api/v1/tools/{tool_name}/execute
 - GET /api/v1/tools/executions?limit=20
 
-The registry currently contains `inspect_image`, `crop_image`, and
-`analyze_image`. Each exposes a Pydantic JSON Schema. ToolExecutor validates
+Agent endpoints:
+
+- POST /api/v1/agent/run
+- GET /api/v1/agent/executions?limit=20
+
+The registry contains `inspect_image`, `crop_image`, `analyze_image`, and
+`detect_objects`. Each exposes a Pydantic JSON Schema. ToolExecutor validates
 inputs, generates an execution ID, records duration, isolates failures, returns a
 ToolResult, and keeps the latest 50 safe in-memory trace records. Crop artifacts
 are written below `E:\sht\DEMO\GeoAgent\outputs\tools`; image bytes are never put
 inside ToolResult JSON. See `docs/tool-system.md` for the complete boundary.
+
+`detect_objects` accepts an image path plus optional confidence, IoU, and COCO
+class filters. Its default confidence is 0.25 and default IoU threshold is 0.45.
+It returns image dimensions, total detections, class counts, class ID/name,
+confidence, and original-image `xyxy` pixel coordinates. Every successful call,
+including an empty result, writes `annotated.jpg` under the Tool output directory.
+DetectorManager lazy-loads once, reuses the same instance, runs only on `cuda:0`,
+and can release its weights independently from Qwen.
 
 The infer endpoint accepts multipart image, prompt and max_new_tokens. Supported
 formats are PNG, JPEG/JPG and WEBP. max_new_tokens is limited to 64–512.
@@ -170,10 +222,24 @@ With FastAPI running:
 With FastAPI and Gradio running:
 
     .\.venv\Scripts\python.exe -m scripts.verify_ui
+    .\.venv\Scripts\python.exe -m scripts.verify_phase4_api
+    .\.venv\Scripts\python.exe -m scripts.verify_phase4_ui
 
-The integration suite includes the real Phase 2 Tool API chain, model auto-load,
+The integration suite includes real Qwen Agent decisions for a metadata-only task,
+a semantic-analysis task, and a multi-step inspect/crop/analyze task. It verifies
+that the crop artifact becomes the next analyze_image input, all five repeated
+content runs use one necessary tool, and GPU allocation remains stable. It also
+retains the Phase 2 Tool API chain, model auto-load,
 manual `inspect_image -> crop_image -> analyze_image` execution, five consecutive
 Qwen tool calls, GPU allocation regression, trace checks, and executor overhead.
+
+See `docs/phase3-validation.md` for the measured Agent decisions, Scenario D
+artifact chain, latency, five-run VRAM results, and live API/UI acceptance.
+
+Phase 4 integration additionally covers two COCO photos, five repeated detections,
+class filtering, detector reuse, detection-only Agent routing, detect-then-analyze,
+crop-to-detect artifact propagation, annotated previews, and simultaneous Qwen +
+YOLO residency. See `docs/phase4-validation.md` for measured results.
 
 ## Benchmark
 
@@ -199,4 +265,4 @@ weight formats, large TIFF files and logs are ignored. The small sample images a
 original project assets. Do not commit user images, credentials, model files,
 Hub cache, benchmark output or datasets.
 
-No commit or push is performed by the Phase 1 workflow.
+No commit or push is performed by the Phase 4 workflow.

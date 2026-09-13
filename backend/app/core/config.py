@@ -30,10 +30,19 @@ class Settings(BaseSettings):
     vlm_max_image_edge: int = Field(default=2048, ge=512, le=4096)
     vlm_max_visual_tokens: int = Field(default=1280, ge=256, le=4096)
     vlm_default_max_new_tokens: int = Field(default=256, ge=64, le=512)
+    detector_model_id: str = "yolo11s"
+    detector_model_path: Path
+    detector_device: Literal["cuda:0"] = "cuda:0"
+    detector_imgsz: int = Field(default=640, ge=320, le=1280)
+    detector_config_dir: Path
     app_name: str = "GeoAgent"
-    app_version: str = "0.3.0"
+    app_version: str = "0.5.0"
     tool_trace_limit: int = Field(default=50, ge=1, le=1000)
     tool_timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    agent_default_max_steps: int = Field(default=6, ge=1, le=10)
+    agent_trace_limit: int = Field(default=50, ge=1, le=1000)
+    agent_repair_attempts: int = Field(default=1, ge=0, le=2)
+    agent_planner_max_new_tokens: int = Field(default=256, ge=64, le=512)
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_host: str = "127.0.0.1"
@@ -43,7 +52,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_paths(self):
-        names = ("project_root", "storage_root", "vlm_model_path", *self.asset_paths.keys())
+        names = (
+            "project_root", "storage_root", "vlm_model_path", "detector_model_path",
+            *self.asset_paths.keys(),
+        )
         for name in names:
             path = getattr(self, name)
             if not path.is_absolute():
@@ -63,6 +75,9 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name.upper()} must be a child of STORAGE_ROOT; no fallback allowed")
         if not self.vlm_model_path.is_relative_to(self.model_dir) or self.vlm_model_path == self.model_dir:
             raise ValueError("VLM_MODEL_PATH must be a child of MODEL_DIR")
+        if (not self.detector_model_path.is_relative_to(self.model_dir)
+                or self.detector_model_path == self.model_dir):
+            raise ValueError("DETECTOR_MODEL_PATH must be a child of MODEL_DIR")
         if len(set(self.asset_paths.values())) != len(self.asset_paths):
             raise ValueError("Asset directories must be distinct")
         return self
@@ -70,7 +85,8 @@ class Settings(BaseSettings):
     @property
     def asset_paths(self) -> dict[str, Path]:
         return {name: getattr(self, name) for name in (
-            "model_dir", "hf_home", "dataset_dir", "output_dir", "checkpoint_dir", "temp_dir"
+            "model_dir", "hf_home", "detector_config_dir", "dataset_dir", "output_dir",
+            "checkpoint_dir", "temp_dir"
         )}
 
     @property

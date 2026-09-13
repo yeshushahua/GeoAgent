@@ -3,7 +3,9 @@ import pytest
 
 from backend.app.models.errors import ModelLoadError
 from backend.app.models.manager import ModelManager, ModelState
-from backend.app.schemas.inference import GenerationInfo, GpuMemory, ImageInfo, InferenceResult
+from backend.app.schemas.inference import (
+    GenerationInfo, GpuMemory, ImageInfo, InferenceResult, TextGenerationResult,
+)
 
 
 class FakeWrapper:
@@ -32,6 +34,14 @@ class FakeWrapper:
             gpu=GpuMemory(allocated_gb=1, reserved_gb=1, peak_allocated_gb=1),
         )
 
+    def generate_text(self, prompt, max_new_tokens, system_prompt=None):
+        return TextGenerationResult(
+            text=f"planned: {system_prompt}|{prompt}", model="Qwen3-VL-4B-Instruct",
+            latency_ms=5, device="cuda:0", dtype="bfloat16",
+            gpu=GpuMemory(allocated_gb=1, reserved_gb=1, peak_allocated_gb=1),
+            max_new_tokens=max_new_tokens,
+        )
+
 
 def test_load_infer_unload_reload(settings):
     manager = ModelManager(settings, factory=FakeWrapper)
@@ -40,6 +50,7 @@ def test_load_infer_unload_reload(settings):
     assert manager.load_model()["state"] == "READY"
     result = manager.infer(Image.new("RGB", (32, 24)), "hello", 64)
     assert result.text == "seen: hello"
+    assert manager.plan("choose", 64, "policy").text == "planned: policy|choose"
     assert manager.unload_model()["state"] == "UNLOADED"
     assert manager.load_model()["state"] == "READY"
 

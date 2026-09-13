@@ -29,6 +29,7 @@ def prepare_storage(settings: Settings) -> None:
         "HF_HUB_CACHE": str(settings.hf_home / "hub"),
         "HF_ASSETS_CACHE": str(settings.hf_home / "assets"),
         "HF_DATASETS_CACHE": str(settings.hf_home / "datasets"),
+        "YOLO_CONFIG_DIR": str(settings.detector_config_dir),
         "GRADIO_TEMP_DIR": str(settings.temp_dir / "gradio"),
         "GRADIO_ANALYTICS_ENABLED": "False",
         "TMP": str(settings.temp_dir),

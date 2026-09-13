@@ -16,4 +16,5 @@ pytest-cov>=6,<8
 transformers>=4.57
 accelerate>=1.11,<2
 qwen-vl-utils==0.0.14
+ultralytics==8.4.148
 huggingface-hub>=0.34,<2

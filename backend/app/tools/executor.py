@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from backend.app.models.errors import VlmError
+from backend.app.detection.errors import DetectorError
 from backend.app.schemas.tool_result import ToolError, ToolResult
 from backend.app.tools.context import ToolContext
 from backend.app.tools.errors import ToolExecutionError
@@ -46,7 +47,7 @@ class ToolExecutor:
             )
         except TimeoutError:
             result = self._failure(tool_name, "TOOL_TIMEOUT", "Tool execution timed out")
-        except (VlmError, ToolExecutionError) as exc:
+        except (VlmError, DetectorError, ToolExecutionError) as exc:
             self.context.logger.exception("[%s] %s failed", execution_id, tool_name)
             result = self._failure(tool_name, exc.code, str(exc))
         except Exception:

@@ -28,7 +28,11 @@ class CropImageInput(BaseModel):
 
 class CropImageTool(BaseTool):
     name = "crop_image"
-    description = "Crop a rectangular region from an image and return the saved image as an artifact."
+    description = (
+        "Crop a rectangular pixel region and return it as an artifact. A named corner "
+        "quarter means one quadrant from a 2-by-2 split: use floor(width / 2) and "
+        "floor(height / 2) as the integer midpoints, never width / 4 and height / 4."
+    )
     category = "utility"
     input_schema = CropImageInput
 

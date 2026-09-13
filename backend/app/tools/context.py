@@ -3,10 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.app.core.config import Settings
 from backend.app.models.manager import ModelManager
 from backend.app.tools.trace import ToolTraceStore
+
+if TYPE_CHECKING:
+    from backend.app.detection.manager import DetectorManager
 
 
 @dataclass(frozen=True)
@@ -15,6 +19,7 @@ class ToolContext:
     model_manager: ModelManager
     logger: logging.Logger
     trace_store: ToolTraceStore
+    detector_manager: DetectorManager | None = None
 
     def validate_read_path(self, value: Path) -> Path:
         path = value.expanduser().resolve()

@@ -15,7 +15,9 @@ def valid_data(tmp_path):
                 model_dir=storage / "models", hf_home=storage / "cache" / "huggingface",
                 dataset_dir=storage / "datasets", output_dir=storage / "outputs",
                 checkpoint_dir=storage / "checkpoints", temp_dir=storage / "temp",
-                vlm_model_path=storage / "models" / "Qwen3-VL-4B-Instruct")
+                vlm_model_path=storage / "models" / "Qwen3-VL-4B-Instruct",
+                detector_model_path=storage / "models" / "object_detection" / "yolo11s.pt",
+                detector_config_dir=storage / "cache" / "ultralytics")
 
 
 def test_config_parses_env(tmp_path, monkeypatch):
@@ -30,7 +32,10 @@ def test_config_parses_env(tmp_path, monkeypatch):
         assert getattr(config, key) == value.resolve()
 
 
-@pytest.mark.parametrize("field", ["model_dir", "hf_home", "dataset_dir", "output_dir", "checkpoint_dir", "temp_dir"])
+@pytest.mark.parametrize("field", [
+    "model_dir", "hf_home", "detector_config_dir", "dataset_dir", "output_dir",
+    "checkpoint_dir", "temp_dir",
+])
 def test_reject_asset_outside_storage(tmp_path, monkeypatch, field):
     data = valid_data(tmp_path)
     monkeypatch.setattr(Path, "is_dir", lambda self: True)

@@ -18,7 +18,13 @@ from backend.app.models.errors import (
     ModelFilesMissingError,
     ModelLoadError,
 )
-from backend.app.schemas.inference import GenerationInfo, GpuMemory, ImageInfo, InferenceResult
+from backend.app.schemas.inference import (
+    GenerationInfo,
+    GpuMemory,
+    ImageInfo,
+    InferenceResult,
+    TextGenerationResult,
+)
 
 logger = logging.getLogger("geoagent")
 REQUIRED_FILES = ("config.json", "generation_config.json")
@@ -193,4 +199,70 @@ class QwenVlModel:
             image=image_info,
             generation=GenerationInfo(max_new_tokens=max_new_tokens),
             gpu=memory,
+        )
+
+    @torch.inference_mode()
+    def generate_text(
+        self, prompt: str, max_new_tokens: int, system_prompt: str | None = None
+    ) -> TextGenerationResult:
+        """Run a text-only planner turn on the already loaded multimodal model."""
+        if self.model is None or self.processor is None:
+            raise ModelLoadError("Model is not loaded")
+        torch.cuda.reset_peak_memory_stats(0)
+        started = time.perf_counter()
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_prompt}],
+                })
+            messages.append({"role": "user", "content": [{"type": "text", "text": prompt}]})
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self.processor(text=text, return_tensors="pt").to(
+                self.settings.vlm_device
+            )
+            generated = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False
+            )
+            trimmed = [
+                output[len(input_ids):]
+                for input_ids, output in zip(inputs.input_ids, generated)
+            ]
+            output_text = self.processor.batch_decode(
+                trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0].strip()
+            if not output_text:
+                raise ValueError("Planner returned an empty response")
+            torch.cuda.synchronize(0)
+            peak_gb = round(torch.cuda.max_memory_allocated(0) / 1024**3, 3)
+            del generated, trimmed, inputs
+        except torch.OutOfMemoryError as exc:
+            torch.cuda.empty_cache()
+            logger.exception("CUDA OOM during text generation")
+            raise CudaOutOfMemoryError(
+                "CUDA memory exhausted during agent decision"
+            ) from exc
+        except Exception as exc:
+            torch.cuda.empty_cache()
+            logger.exception("Text generation failed")
+            raise InferenceFailedError(
+                "Qwen3-VL agent decision failed; see server log"
+            ) from exc
+        latency_ms = (time.perf_counter() - started) * 1000
+        memory = get_gpu_memory()
+        memory.peak_allocated_gb = peak_gb
+        logger.info("Agent planner generation completed in %.0f ms", latency_ms)
+        return TextGenerationResult(
+            text=output_text,
+            model="Qwen3-VL-4B-Instruct",
+            latency_ms=round(latency_ms, 2),
+            device=self.settings.vlm_device,
+            dtype=self.settings.vlm_dtype,
+            gpu=memory,
+            max_new_tokens=max_new_tokens,
         )

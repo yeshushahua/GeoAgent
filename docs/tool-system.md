@@ -50,6 +50,9 @@ type, absolute path, and MIME type; binary image data is never embedded in JSON.
   `E:\sht\DEMO\GeoAgent\outputs\tools\YYYYMMDD\<execution_id>\crop.png`.
 - `analyze_image` auto-loads an unloaded Qwen3-VL model, then calls it through
   `ModelManager` and converts `InferenceResult` into `ToolResult`.
+- `detect_objects` auto-loads one reusable YOLO11s COCO detector through the
+  independent `DetectorManager`, returns structured class/count/confidence/bbox
+  data, and writes `annotated.jpg` as an Artifact.
 
 Uploaded names never form output paths. Tool API uploads receive generated UUID
 names in the configured E-drive temporary directory and are removed after each
@@ -66,5 +69,5 @@ Execution accepts multipart image uploads and tool-specific form fields. A trust
 image reference inside the configured project or storage root can also be supplied
 as `image_path`.
 
-Future phases can register `detect_objects`, `segment_objects`, and geospatial
-tools without adding dispatch branches to the executor.
+Future phases can register segmentation and geospatial tools without adding
+dispatch branches to the executor.

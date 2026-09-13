@@ -1,4 +1,4 @@
-"""Gradio UI; user analysis goes through the Phase 2 Tool API."""
+"""Chinese Gradio UI; the primary analysis path goes through VisionAgent."""
 import io
 import logging
 import os
@@ -11,7 +11,7 @@ from backend.app.core.logging import configure_logging
 from backend.app.services.storage import prepare_storage
 
 logger = logging.getLogger("geoagent")
-PLACEHOLDER = "GeoAgent is ready. Autonomous agent behavior begins in a later phase."
+PLACEHOLDER = "GeoAgent 已就绪。"
 
 
 def _model_markdown(system: dict, model: dict) -> str:
@@ -20,11 +20,22 @@ def _model_markdown(system: dict, model: dict) -> str:
     marker = "●" if state == "READY" else "○"
     return (
         f"### Qwen3-VL-4B-Instruct {marker} {state}\n"
-        f"GPU: **{system.get('gpu_name') or 'Unavailable'}** · "
-        f"VRAM allocated: **{memory.get('allocated_gb', 0):.3f} / "
+        f"GPU：**{system.get('gpu_name') or '不可用'}** · "
+        f"已分配显存：**{memory.get('allocated_gb', 0):.3f} / "
         f"{system.get('gpu_vram_gb') or 0:.2f} GiB**\n\n"
-        f"Device: {model.get('device', '-')} · dtype: {model.get('dtype', '-')} · "
-        f"attention: {model.get('attention', '-')}"
+        f"设备：{model.get('device', '-')} · dtype：{model.get('dtype', '-')} · "
+        f"attention：{model.get('attention', '-')}"
+    )
+
+
+def _detector_markdown(detector: dict) -> str:
+    state = detector.get("state", "UNKNOWN")
+    marker = "●" if state == "READY" else "○"
+    return (
+        f"### YOLO11s COCO Detector {marker} {state}\n"
+        f"设备：{detector.get('device', '-')} · "
+        f"加载次数：{detector.get('load_count', 0)} · "
+        f"权重：{detector.get('model_path', '-')}"
     )
 
 
@@ -37,21 +48,31 @@ def fetch_status(settings: Settings) -> tuple[str, dict]:
             system.raise_for_status()
             model = client.get(f"{settings.api_base_url}/models/vlm/status")
             model.raise_for_status()
+            detector = client.get(f"{settings.api_base_url}/models/detector/status")
+            detector.raise_for_status()
             tools = client.get(f"{settings.api_base_url}/tools")
             tools.raise_for_status()
-        health_data, info, model_info, tool_info = health.json(), system.json(), model.json(), tools.json()
+        health_data, info, model_info, detector_info, tool_info = (
+            health.json(), system.json(), model.json(), detector.json(), tools.json()
+        )
         if health_data.get("status") != "ok":
             raise ValueError("Backend health is not ok")
         ready = info["cuda_available"] and "RTX 4090" in (info["gpu_name"] or "")
-        title = "System ● Ready" if ready else "System ● GPU attention required"
+        title = "系统 ● 就绪" if ready else "系统 ● GPU 需要检查"
         return (
-            f"### {title}\nBackend: **Online** · CUDA: **{info['cuda_available']}**\n\n"
-            f"Storage: {info['storage_root']}\n\n{_model_markdown(info, model_info)}",
-            {"system": info, "model": model_info, "tools": [item["name"] for item in tool_info]},
+            f"### {title}\n后端：**在线** · CUDA：**{info['cuda_available']}**\n\n"
+            f"存储目录：{info['storage_root']}\n\n{_model_markdown(info, model_info)}\n\n"
+            f"{_detector_markdown(detector_info)}",
+            {
+                "system": info,
+                "model": model_info,
+                "detector": detector_info,
+                "tools": [item["name"] for item in tool_info],
+            },
         )
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning("Backend unavailable: %s", exc)
-        return "### Backend unavailable\nStart the FastAPI backend and refresh status.", {
+        return "### 后端不可用\n请启动 FastAPI 后端并刷新状态。", {
             "backend": "unavailable"
         }
 
@@ -64,24 +85,27 @@ def model_action(settings: Settings, action: str) -> tuple[str, dict]:
         return fetch_status(settings)
     except httpx.HTTPStatusError as exc:
         detail = exc.response.json().get("error", {})
-        return f"### Model {action} failed\n{detail.get('message', str(exc))}", detail
+        return f"### 模型操作失败\n{detail.get('message', str(exc))}", detail
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Model action failed: %s", exc)
-        return f"### Backend unavailable\n{exc}", {"backend": "unavailable"}
+        return f"### 后端不可用\n{exc}", {"backend": "unavailable"}
 
 
 def _tool_markdown(result: dict) -> str:
     metadata = result.get("metadata", {})
     success = result.get("success", False)
     tool = result.get("tool", "unknown")
-    model_step = " → Qwen3-VL" if tool == "analyze_image" else ""
+    model_step = {
+        "analyze_image": " → Qwen3-VL",
+        "detect_objects": " → YOLO11s",
+    }.get(tool, "")
     return (
-        "### Tool Execution\n"
-        f"Tool: **{tool}**  \n"
-        f"Status: **{'SUCCESS' if success else 'FAILED'}**  \n"
-        f"Execution ID: `{metadata.get('execution_id', '-')}`  \n"
-        f"Duration: **{metadata.get('duration_ms', 0):.2f} ms**  \n\n"
-        f"Sequence: `{tool}{model_step} → {'completed' if success else 'failed'}`"
+        "### 工具调用\n"
+        f"Tool：**{tool}**  \n"
+        f"状态：**{'成功' if success else '失败'}**  \n"
+        f"Execution ID：`{metadata.get('execution_id', '-')}`  \n"
+        f"耗时：**{metadata.get('duration_ms', 0):.2f} ms**  \n\n"
+        f"执行：`{tool}{model_step} → {'完成' if success else '失败'}`"
     )
 
 
@@ -97,43 +121,99 @@ def _post_tool(settings: Settings, tool_name: str, image, fields: dict) -> dict:
     return response.json()
 
 
+def _post_agent(settings: Settings, image, message: str, max_new_tokens: int) -> dict:
+    payload = io.BytesIO()
+    image.convert("RGB").save(payload, format="PNG")
+    with httpx.Client(timeout=1200, trust_env=False) as client:
+        response = client.post(
+            f"{settings.api_base_url}/agent/run",
+            files={"image": ("upload.png", payload.getvalue(), "image/png")},
+            data={
+                "message": message,
+                "max_steps": settings.agent_default_max_steps,
+                "max_new_tokens": int(max_new_tokens),
+            },
+        )
+    return response.json()
+
+
+def _agent_markdown(result: dict) -> str:
+    if not result:
+        return "### Agent 执行过程\n尚未执行。"
+    lines = ["### Agent 执行过程", f"Run ID：`{result.get('run_id', '-')}`", ""]
+    for step in result.get("steps", []):
+        if step.get("decision_type") == "final":
+            lines.append(f"{step['index']}. **生成最终回答** · {step.get('duration_ms', 0):.2f} ms")
+            continue
+        tool = step.get("tool_name") or "调用已阻止"
+        marker = "✓" if step.get("success") else "✗"
+        lines.append(f"{step['index']}. `{tool}` {marker} · {step.get('duration_ms', 0):.2f} ms")
+        if tool == "detect_objects" and step.get("success"):
+            observation = step.get("observation_summary", {})
+            counts = observation.get("class_counts", {})
+            summary = "、".join(f"{name} × {count}" for name, count in counts.items()) or "未检出目标"
+            lines.append(
+                f"   检测总数：**{observation.get('detection_count', 0)}** · {summary}"
+            )
+    metadata = result.get("metadata", {})
+    lines.extend([
+        "",
+        f"总耗时：**{metadata.get('total_duration_ms', 0):.2f} ms** · "
+        f"Planner：**{metadata.get('planner_duration_ms', 0):.2f} ms** · "
+        f"Tools：**{metadata.get('tool_duration_ms', 0):.2f} ms**",
+    ])
+    return "\n".join(lines)
+
+
+def _ui_safe_result(value):
+    """Keep debug JSON readable without Gradio treating nested Artifact paths as files."""
+    if isinstance(value, list):
+        return [_ui_safe_result(item) for item in value]
+    if isinstance(value, dict):
+        converted = {key: _ui_safe_result(item) for key, item in value.items()}
+        if "path" in converted and "mime_type" in converted:
+            converted["artifact_path"] = converted.pop("path")
+        return converted
+    return value
+
+
 def analyze(settings: Settings, image, prompt: str, max_new_tokens: int):
     if image is None:
-        yield "Upload an image first.", {}, *fetch_status(settings), "### Tool Execution\nNo execution."
+        yield "请先上传图像。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", None
         return
     if not prompt or not prompt.strip():
-        yield "Enter a prompt first.", {}, *fetch_status(settings), "### Tool Execution\nNo execution."
+        yield "请先输入任务指令。", {}, *fetch_status(settings), "### Agent 执行过程\n尚未执行。", image
         return
     try:
         status_text, details = fetch_status(settings)
         state = details.get("model", {}).get("state")
         if state == "ERROR":
             message = details["model"].get("last_error") or "Unknown model error"
-            yield f"Model error: {message}", {}, status_text, details, "### Tool Execution\nNo execution."
+            yield f"模型错误：{message}", {}, status_text, details, "### Agent 执行过程\n尚未执行。", image
             return
         if state == "UNLOADED":
-            yield "**Loading Qwen3-VL...**", {}, "### Loading Qwen3-VL...", details, "### Tool Execution\nPreparing `analyze_image`..."
-        yield "**Analyzing...**", {}, "### Analyzing...", details, "### Tool Execution\nRunning `analyze_image → Qwen3-VL`..."
-        result = _post_tool(
-            settings,
-            "analyze_image",
-            image,
-            {"prompt": prompt.strip(), "max_new_tokens": int(max_new_tokens)},
-        )
+            yield "**正在加载 Qwen3-VL...**", {}, "### 正在加载 Qwen3-VL...", details, "### Agent 执行过程\n正在准备 Vision Agent...", image
+        yield "**Agent 正在决策并调用工具...**", {}, "### Agent 正在分析...", details, "### Agent 执行过程\n正在执行可观察的决策与工具步骤...", image
+        result = _post_agent(settings, image, prompt.strip(), int(max_new_tokens))
         status, details = fetch_status(settings)
         if not result.get("success"):
             error = result.get("error", {})
-            yield f"Request failed: {error.get('message', 'Unknown tool error')}", result, status, details, _tool_markdown(result)
+            yield f"任务失败：{error.get('message', '未知 Agent 错误')}", _ui_safe_result(result), status, details, _agent_markdown(result), image
             return
-        yield result["data"]["answer"], result, status, details, _tool_markdown(result)
+        preview = image
+        if result.get("artifacts"):
+            artifact_path = result["artifacts"][-1]["path"]
+            with Image.open(artifact_path) as opened:
+                preview = opened.copy()
+        yield result["answer"], _ui_safe_result(result), status, details, _agent_markdown(result), preview
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         status, details = fetch_status(settings)
-        yield f"Backend unavailable: {exc}", {}, status, details, "### Tool Execution\nRequest failed before execution."
+        yield f"后端不可用：{exc}", {}, status, details, "### Agent 执行过程\n请求未能执行。", image
 
 
 def execute_selected_tool(settings, tool_name, image, prompt, tokens, x1, y1, x2, y2):
     if image is None:
-        return "Upload an image first.", {}, None, "### Tool Execution\nNo execution."
+        return "请先上传图像。", {}, None, "### 工具调用\n尚未执行。"
     fields = {
         "prompt": prompt.strip() if prompt else None,
         "max_new_tokens": int(tokens),
@@ -147,12 +227,18 @@ def execute_selected_tool(settings, tool_name, image, prompt, tokens, x1, y1, x2
             with Image.open(artifact_path) as opened:
                 preview = opened.copy()
         if result.get("success"):
-            answer = result.get("data", {}).get("answer") or "Tool completed successfully."
+            data = result.get("data", {})
+            if tool_name == "detect_objects":
+                counts = data.get("class_counts", {})
+                summary = "、".join(f"{name} × {count}" for name, count in counts.items()) or "未检出目标"
+                answer = f"检测完成，共 {data.get('detection_count', 0)} 个目标：{summary}。"
+            else:
+                answer = data.get("answer") or "工具执行成功。"
         else:
-            answer = f"Tool failed: {result.get('error', {}).get('message', 'Unknown error')}"
-        return answer, result, preview, _tool_markdown(result)
+            answer = f"工具执行失败：{result.get('error', {}).get('message', '未知错误')}"
+        return answer, _ui_safe_result(result), preview, _tool_markdown(result)
     except (httpx.HTTPError, ValueError, KeyError, OSError) as exc:
-        return f"Tool request failed: {exc}", {}, image, "### Tool Execution\nRequest failed before execution."
+        return f"工具请求失败：{exc}", {}, image, "### 工具调用\n请求未能执行。"
 
 
 def chat(message: str, history: list | None):
@@ -181,35 +267,35 @@ def build_ui(settings: Settings | None = None):
         yield from analyze(settings, image, prompt, tokens)
 
     with gr.Blocks(title="GeoAgent", analytics_enabled=False) as demo:
-        gr.Markdown("# GeoAgent\nTool-enabled multimodal system · **Phase 2**")
-        status = gr.Markdown("### Connecting to backend…")
+        gr.Markdown("# GeoAgent\n多模态视觉智能体 · **Phase 4 · Object Detection**")
+        status = gr.Markdown("### 正在连接后端…")
         with gr.Row():
-            load = gr.Button("Load Model", variant="primary")
-            unload = gr.Button("Unload Model")
-            refresh = gr.Button("Refresh Status")
+            load = gr.Button("加载模型", variant="primary")
+            unload = gr.Button("卸载模型")
+            refresh = gr.Button("刷新状态")
         with gr.Row():
             input_image = gr.Image(
-                label="Input Image · Upload", type="pil", format="png", sources=["upload"]
+                label="输入图像 · 上传", type="pil", format="png", sources=["upload"]
             )
             result_image = gr.Image(
-                label="Result / Preview", type="pil", format="png", interactive=False
+                label="智能分析结果 / 预览", type="pil", format="png", interactive=False
             )
         prompt = gr.Textbox(
-            label="Prompt", value="Describe this image in detail.", lines=3
+            label="任务指令", value="分析一下这张图片主要有什么内容。", lines=3
         )
         max_tokens = gr.Slider(
             minimum=64,
             maximum=512,
             value=settings.vlm_default_max_new_tokens,
             step=32,
-            label="Max new tokens",
+            label="最大生成长度",
         )
-        analyze_button = gr.Button("Analyze", variant="primary")
-        response = gr.Markdown(label="Qwen3-VL Response")
-        tool_execution = gr.Markdown("### Tool Execution\nNo execution yet.")
-        with gr.Accordion("Manual Tool Execution", open=False):
+        analyze_button = gr.Button("开始分析", variant="primary")
+        response = gr.Markdown(label="最终回答")
+        tool_execution = gr.Markdown("### Agent 执行过程\n尚未执行。")
+        with gr.Accordion("高级 / 手动工具调试", open=False):
             tool_choice = gr.Dropdown(
-                ["inspect_image", "crop_image", "analyze_image"],
+                ["inspect_image", "crop_image", "analyze_image", "detect_objects"],
                 value="inspect_image",
                 label="Tool",
             )
@@ -218,10 +304,10 @@ def build_ui(settings: Settings | None = None):
                 y1 = gr.Number(value=0, precision=0, label="y1")
                 x2 = gr.Number(value=256, precision=0, label="x2")
                 y2 = gr.Number(value=256, precision=0, label="y2")
-            run_tool = gr.Button("Execute Tool")
-        with gr.Accordion("System / Model", open=True):
-            details = gr.JSON(label="Live backend / model information")
-            inference_details = gr.JSON(label="Inference metrics")
+            run_tool = gr.Button("执行 Tool")
+        with gr.Accordion("高级 / 调试信息", open=False):
+            details = gr.JSON(label="系统 / 模型信息")
+            inference_details = gr.JSON(label="Agent / 推理指标")
         input_image.change(preview_image, input_image, result_image, api_name="preview")
         refresh.click(lambda: fetch_status(settings), outputs=[status, details], api_name="status")
         load.click(
@@ -237,7 +323,7 @@ def build_ui(settings: Settings | None = None):
         analyze_button.click(
             analyze_event,
             [input_image, prompt, max_tokens],
-            [response, inference_details, status, details, tool_execution],
+            [response, inference_details, status, details, tool_execution, result_image],
             api_name="analyze",
         )
         run_tool.click(
@@ -259,4 +345,5 @@ if __name__ == "__main__":
         server_port=config.gradio_port,
         share=False,
         theme="soft",
+        allowed_paths=[str(config.output_dir / "tools")],
     )

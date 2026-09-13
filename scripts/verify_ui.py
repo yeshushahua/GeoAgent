@@ -1,4 +1,4 @@
-"""HTTP-level Gradio Phase 2 acceptance using real component event endpoints."""
+"""HTTP-level Gradio Phase 3 acceptance using real component event endpoints."""
 import argparse
 import json
 import logging
@@ -30,7 +30,7 @@ def main():
     client = Client(url, verbose=False, httpx_kwargs={"trust_env": False})
     status, info = client.predict(api_name="/status")
     if args.expect_unavailable:
-        assert "Backend unavailable" in status, status
+        assert "后端不可用" in status, status
         assert info["backend"] == "unavailable"
         logging.info("Gradio unavailable-backend HTTP test PASS")
         return
@@ -43,38 +43,57 @@ def main():
         assert original.convert("RGB").tobytes() == result.convert("RGB").tobytes()
     status, info = client.predict(api_name="/unload_model")
     assert info["model"]["state"] == "UNLOADED"
-    answer, result, status, info, tool_panel = client.predict(
-        handle_file(str(source)), "Describe this image briefly.", 64, api_name="/analyze"
+    task = "先检查图片尺寸，裁剪左上四分之一区域，然后分析裁剪后的内容。"
+    answer, result, status, info, agent_panel, result_preview = client.predict(
+        handle_file(str(source)), task, 64, api_name="/analyze"
     )
-    assert answer and result["success"] and result["tool"] == "analyze_image"
+    assert answer and result["success"]
+    sequence = [step["tool_name"] for step in result["steps"] if step["tool_name"]]
+    assert sequence == ["inspect_image", "crop_image", "analyze_image"]
     assert result["metadata"]["model"] == "Qwen3-VL-4B-Instruct"
     assert result["metadata"]["device"] == "cuda:0"
-    assert result["metadata"]["dtype"] == "bfloat16"
-    assert result["metadata"]["latency_ms"] > 0
-    assert result["metadata"]["gpu_peak_gb"] > 0
-    assert result["metadata"]["execution_id"] in tool_panel
-    assert "SUCCESS" in tool_panel and "analyze_image → Qwen3-VL" in tool_panel
+    assert result["metadata"]["planner_duration_ms"] > 0
+    assert result["metadata"]["tool_duration_ms"] > 0
+    assert result["metadata"]["peak_vram_gib"] > 0
+    assert result["run_id"] in agent_panel
+    assert all(name in agent_panel for name in sequence)
+    assert "生成最终回答" in agent_panel
+    assert result["artifacts"] and result_preview
+    crop_path = Path(result["artifacts"][0]["artifact_path"])
+    crop_step = next(step for step in result["steps"] if step["tool_name"] == "crop_image")
+    assert crop_step["arguments_summary"] == {
+        "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+    }
+    analyze_step = next(step for step in result["steps"] if step["tool_name"] == "analyze_image")
+    assert analyze_step["arguments_summary"]["image_path"] == "crop.png"
+    preview_path = Path(result_preview["path"] if isinstance(result_preview, dict) else result_preview)
+    with Image.open(crop_path) as crop, Image.open(preview_path) as preview_image:
+        assert crop.size == (240, 150)
+        assert crop.size == preview_image.size
+        assert crop.convert("RGB").tobytes() == preview_image.convert("RGB").tobytes()
     assert info["model"]["state"] == "READY"
     summary, inspect_result, inspect_preview, inspect_panel = client.predict(
         "inspect_image", handle_file(str(source)), "unused", 64,
         0, 0, 256, 256, api_name="/execute_tool"
     )
     assert summary and inspect_result["data"]["width"] > 0
-    assert inspect_preview and "SUCCESS" in inspect_panel
+    assert inspect_preview and "成功" in inspect_panel
     status, info = client.predict(api_name="/unload_model")
     assert info["model"]["state"] == "UNLOADED"
     output = {
         "answer": answer,
-        "tool_result": result,
-        "tool_panel": tool_panel,
+        "task": task,
+        "agent_result": result,
+        "agent_panel": agent_panel,
+        "result_preview": str(preview_path),
         "manual_inspect": inspect_result,
         "final_model_state": info["model"],
     }
-    target = settings.output_dir / "benchmarks" / "phase2" / "gradio_acceptance.json"
+    target = settings.output_dir / "benchmarks" / "phase3" / "gradio_acceptance.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
     logging.info(
-        "Gradio Phase 2 PASS: page, upload/preview, auto-load Tool API analyze, tool panel, manual inspect, unload"
+        "Gradio Phase 3 PASS: Chinese UI event, auto-load Agent API, autonomous Scenario D, execution panel, crop preview, manual Tool debug, unload"
     )
     logging.info("Acceptance written to %s", target)
 

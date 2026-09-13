@@ -1,0 +1,324 @@
+import json
+import logging
+from pathlib import Path
+
+from PIL import Image
+import pytest
+
+from backend.app.agent.planner import AgentPlannerTurn
+from backend.app.agent.prompts import AGENT_SYSTEM_PROMPT
+from backend.app.agent.schemas import AgentRequest
+from backend.app.agent.service import VisionAgent
+from backend.app.agent.trace import AgentTraceStore
+from backend.app.models.manager import ModelState
+from backend.app.detection.schemas import BoundingBox, Detection
+from backend.app.schemas.inference import GenerationInfo, GpuMemory, ImageInfo, InferenceResult
+from backend.app.tools import build_tool_system
+from backend.tests.test_detect_objects_tool import FakeDetector
+
+
+class FakeAgentManager:
+    def __init__(self, settings):
+        self.settings = settings
+        self.state = ModelState.UNLOADED
+        self.load_calls = 0
+
+    def load_model(self):
+        self.load_calls += 1
+        self.state = ModelState.READY
+        return self.status()
+
+    def status(self):
+        return {"state": self.state.value, "last_error": None}
+
+    def infer(self, image, prompt, max_new_tokens):
+        return InferenceResult(
+            success=True, model="Qwen3-VL-4B-Instruct", text="裁剪区域包含蓝色图形。",
+            latency_ms=10, device="cuda:0", dtype="bfloat16",
+            image=ImageInfo(
+                width=image.width, height=image.height, mode=image.mode,
+                format=image.format or "PNG", preprocessing_width=image.width,
+                preprocessing_height=image.height, resized=False,
+            ),
+            generation=GenerationInfo(max_new_tokens=max_new_tokens),
+            gpu=GpuMemory(allocated_gb=8.2, reserved_gb=8.3, peak_allocated_gb=8.4),
+        )
+
+
+class ScriptedPlanner:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = []
+
+    async def decide(self, state, repair_output=None, repair_error=None):
+        self.calls.append({
+            "step": state.step_count,
+            "observations": len(state.observations),
+            "repair": repair_output is not None,
+            "definitions": [item.name for item in state.tool_definitions],
+        })
+        output = self.outputs.pop(0)
+        if callable(output):
+            output = output(state)
+        return AgentPlannerTurn(output, 2.0, 8.2, 8.4)
+
+
+def source_image(settings, size=(40, 20)):
+    path = settings.project_root / "agent.png"
+    Image.new("RGB", size, "blue").save(path, "PNG")
+    return path
+
+
+def make_agent(settings, planner, detector_manager=None):
+    manager = FakeAgentManager(settings)
+    registry, executor, _ = build_tool_system(
+        settings, manager, logging.getLogger("test"), detector_manager
+    )
+    traces = AgentTraceStore(50)
+    return VisionAgent(
+        registry, executor, manager, traces, logging.getLogger("test"),
+        repair_attempts=1, planner=planner,
+    ), manager, traces
+
+
+def tool_call(name, arguments):
+    return json.dumps({"type": "tool_call", "tool_name": name, "arguments": arguments})
+
+
+@pytest.mark.anyio
+async def test_dynamic_discovery_single_tool_and_final(settings):
+    path = source_image(settings)
+    planner = ScriptedPlanner([
+        tool_call("inspect_image", {"image_path": str(path)}),
+        '{"type":"final","answer":"图像尺寸为 40 × 20 像素，格式为 PNG。"}',
+    ])
+    agent, manager, traces = make_agent(settings, planner)
+    response = await agent.run(AgentRequest(message="告诉我尺寸", image_path=str(path)))
+    assert response.success and response.answer.startswith("图像尺寸")
+    assert [step.tool_name for step in response.steps if step.tool_name] == ["inspect_image"]
+    assert manager.load_calls == 1
+    assert planner.calls[0]["definitions"] == [
+        "analyze_image", "crop_image", "detect_objects", "inspect_image"
+    ]
+    trace = traces.list()[0].model_dump()
+    assert trace["prompt_length"] == len("告诉我尺寸")
+    assert "告诉我尺寸" not in json.dumps(trace, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_multistep_artifact_propagation(settings):
+    path = source_image(settings, (480, 300))
+
+    def crop_from_observation(state):
+        inspected = state.observations[-1].result.data
+        assert inspected["width"] == 480
+        assert inspected["height"] == 300
+        return tool_call("crop_image", {
+            "image_path": str(path),
+            "x1": 0,
+            "y1": 0,
+            "x2": inspected["width"] // 2,
+            "y2": inspected["height"] // 2,
+        })
+
+    def analyze_crop(state):
+        artifact = state.observations[-1].result.artifacts[0].path
+        return tool_call("analyze_image", {
+            "image_path": artifact,
+            "prompt": "请分析这个裁剪区域。",
+            "max_new_tokens": 64,
+        })
+
+    planner = ScriptedPlanner([
+        tool_call("inspect_image", {"image_path": str(path)}),
+        crop_from_observation,
+        analyze_crop,
+        '{"type":"final","answer":"左上区域包含蓝色图形。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner)
+    response = await agent.run(AgentRequest(
+        message="裁剪左上四分之一并分析", image_path=str(path), max_steps=6,
+        max_new_tokens=64,
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "inspect_image", "crop_image", "analyze_image"
+    ]
+    crop_path = response.artifacts[0].path
+    assert Path(crop_path).is_file()
+    with Image.open(crop_path) as crop:
+        assert crop.size == (240, 150)
+    crop_arguments = response.steps[1].arguments_summary
+    assert crop_arguments == {
+        "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+    }
+    assert (crop_arguments["x2"], crop_arguments["y2"]) != (120, 75)
+    assert planner.calls[2]["observations"] == 2
+    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
+
+
+def test_spatial_quadrant_policy_and_integer_rule_are_explicit(settings):
+    required = (
+        '"top-left quarter"',
+        "x2=floor(width / 2)",
+        "y2=floor(height / 2)",
+        "NEVER use width / 4",
+        "x2=240, y2=150",
+    )
+    assert all(fragment in AGENT_SYSTEM_PROMPT for fragment in required)
+
+    manager = FakeAgentManager(settings)
+    registry, _, _ = build_tool_system(settings, manager, logging.getLogger("test"))
+    description = registry.get("crop_image").definition()["description"]
+    assert "2-by-2 split" in description
+    assert "floor(width / 2)" in description
+    assert "never width / 4" in description
+
+
+@pytest.mark.anyio
+async def test_agent_detects_objects_and_exposes_structured_observation(settings):
+    path = source_image(settings, (100, 60))
+    detector = FakeDetector([
+        Detection(
+            class_id=0, class_name="person", confidence=0.94,
+            bbox=BoundingBox(x1=5, y1=4, x2=45, y2=55),
+        )
+    ])
+    planner = ScriptedPlanner([
+        tool_call("detect_objects", {"image_path": str(path)}),
+        '{"type":"final","answer":"检测到 1 个 person。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner, detector)
+    response = await agent.run(AgentRequest(message="检测目标并计数", image_path=str(path)))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == ["detect_objects"]
+    observation = response.steps[0].observation_summary
+    assert observation["detection_count"] == 1
+    assert observation["class_counts"] == {"person": 1}
+    assert Path(response.artifacts[0].path).name == "annotated.jpg"
+
+
+@pytest.mark.anyio
+async def test_detection_observation_grounds_analysis(settings):
+    path = source_image(settings, (100, 60))
+    detector = FakeDetector([
+        Detection(
+            class_id=5, class_name="bus", confidence=0.88,
+            bbox=BoundingBox(x1=10, y1=8, x2=90, y2=55),
+        )
+    ])
+
+    def analyze_after_detection(state):
+        detection = state.observations[-1].result.data
+        assert detection["class_counts"] == {"bus": 1}
+        return tool_call("analyze_image", {
+            "image_path": str(path),
+            "prompt": "结合检测结果 bus=1 分析场景。",
+            "max_new_tokens": 64,
+        })
+
+    planner = ScriptedPlanner([
+        tool_call("detect_objects", {"image_path": str(path)}),
+        analyze_after_detection,
+        '{"type":"final","answer":"检测结果显示一辆公交车。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner, detector)
+    response = await agent.run(AgentRequest(
+        message="先检测再结合结果分析", image_path=str(path), max_new_tokens=64
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "detect_objects", "analyze_image"
+    ]
+    assert response.steps[1].arguments_summary["detection_observation_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_crop_artifact_is_passed_to_detect_objects(settings):
+    path = source_image(settings, (480, 300))
+    detector = FakeDetector()
+
+    def detect_crop(state):
+        artifact = state.observations[-1].result.artifacts[0].path
+        return tool_call("detect_objects", {"image_path": artifact})
+
+    planner = ScriptedPlanner([
+        tool_call("inspect_image", {"image_path": str(path)}),
+        tool_call("crop_image", {
+            "image_path": str(path), "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+        }),
+        detect_crop,
+        '{"type":"final","answer":"裁剪区域内未检出 COCO 目标。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner, detector)
+    response = await agent.run(AgentRequest(
+        message="裁剪左上四分之一后检测", image_path=str(path), max_steps=6
+    ))
+    assert response.success
+    assert [step.tool_name for step in response.steps if step.tool_name] == [
+        "inspect_image", "crop_image", "detect_objects"
+    ]
+    crop_artifact = response.steps[1].artifacts[0].path
+    assert detector.calls[0][0] == Path(crop_artifact)
+    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
+    assert Path(response.artifacts[-1].path).name == "annotated.jpg"
+
+
+@pytest.mark.anyio
+async def test_malformed_unknown_and_invalid_outputs_are_repaired(settings):
+    path = source_image(settings)
+    for invalid in (
+        "not json",
+        tool_call("unknown_tool", {}),
+        tool_call("crop_image", {"image_path": str(path)}),
+    ):
+        planner = ScriptedPlanner([
+            invalid,
+            '{"type":"final","answer":"已安全恢复。"}',
+        ])
+        agent, _, _ = make_agent(settings, planner)
+        response = await agent.run(AgentRequest(message="测试恢复", image_path=str(path)))
+        assert response.success and response.answer == "已安全恢复。"
+        assert planner.calls[1]["repair"] is True
+
+
+@pytest.mark.anyio
+async def test_duplicate_call_is_blocked_and_observed(settings):
+    path = source_image(settings)
+    call = tool_call("inspect_image", {"image_path": str(path)})
+    planner = ScriptedPlanner([
+        call, call, '{"type":"final","answer":"重复调用已停止。"}',
+    ])
+    agent, _, _ = make_agent(settings, planner)
+    response = await agent.run(AgentRequest(
+        message="测试重复", image_path=str(path), max_steps=3
+    ))
+    assert response.success
+    assert response.metadata.tool_call_count == 1
+    assert response.steps[1].decision_type == "blocked"
+    assert response.steps[1].error_type == "DUPLICATE_TOOL_CALL"
+    assert planner.calls[2]["observations"] == 2
+
+
+@pytest.mark.anyio
+async def test_max_steps_and_tool_error_are_safe(settings):
+    path = source_image(settings)
+    planner = ScriptedPlanner([tool_call("inspect_image", {"image_path": str(path)})])
+    agent, _, _ = make_agent(settings, planner)
+    stopped = await agent.run(AgentRequest(
+        message="不能结束", image_path=str(path), max_steps=1
+    ))
+    assert not stopped.success and stopped.error.type == "MAX_STEPS_EXCEEDED"
+
+    failed_crop = ScriptedPlanner([
+        tool_call("crop_image", {
+            "image_path": str(path), "x1": 0, "y1": 0, "x2": 999, "y2": 999,
+        }),
+        '{"type":"final","answer":"裁剪坐标越界，任务未完成。"}',
+    ])
+    agent, _, _ = make_agent(settings, failed_crop)
+    handled = await agent.run(AgentRequest(message="错误裁剪", image_path=str(path)))
+    assert handled.success
+    assert handled.steps[0].success is False
+    assert handled.steps[0].error_type == "INVALID_CROP"
+    assert failed_crop.calls[1]["observations"] == 1

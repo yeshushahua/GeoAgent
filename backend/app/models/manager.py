@@ -10,7 +10,7 @@ from PIL import Image
 from backend.app.core.config import Settings
 from backend.app.models.errors import ModelBusyError, ModelLoadError
 from backend.app.models.qwen_vl import QwenVlModel, get_gpu_memory
-from backend.app.schemas.inference import InferenceResult
+from backend.app.schemas.inference import InferenceResult, TextGenerationResult
 
 logger = logging.getLogger("geoagent")
 
@@ -104,5 +104,19 @@ class ModelManager:
             if self._state != ModelState.READY or self._wrapper is None:
                 raise ModelLoadError("Model is not loaded; call the load endpoint first")
             return self._wrapper.generate(image, prompt, max_new_tokens)
+        finally:
+            self._lock.release()
+
+    def plan(
+        self, prompt: str, max_new_tokens: int, system_prompt: str | None = None
+    ) -> TextGenerationResult:
+        if not self._lock.acquire(blocking=False):
+            raise ModelBusyError("Model operation already in progress")
+        try:
+            if self._state == ModelState.LOADING:
+                raise ModelBusyError("Model is loading")
+            if self._state != ModelState.READY or self._wrapper is None:
+                raise ModelLoadError("Model is not loaded; agent cannot plan")
+            return self._wrapper.generate_text(prompt, max_new_tokens, system_prompt)
         finally:
             self._lock.release()

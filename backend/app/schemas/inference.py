@@ -48,5 +48,16 @@ class InferenceResult(BaseModel):
         return self
 
 
+class TextGenerationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1)
+    model: str
+    latency_ms: float = Field(ge=0)
+    device: str
+    dtype: str
+    gpu: GpuMemory
+    max_new_tokens: int = Field(ge=64, le=512)
+
+
 class ApiError(BaseModel):
     error: InferenceError

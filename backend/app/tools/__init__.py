@@ -4,16 +4,21 @@ from backend.app.tools.executor import ToolExecutor
 from backend.app.tools.registry import ToolRegistry
 from backend.app.tools.trace import ToolTraceStore
 from backend.app.tools.utility import CropImageTool
-from backend.app.tools.vision import AnalyzeImageTool, InspectImageTool
+from backend.app.tools.vision import AnalyzeImageTool, DetectObjectsTool, InspectImageTool
 
 
-def build_tool_system(settings, model_manager, logger):
+def build_tool_system(settings, model_manager, logger, detector_manager=None):
+    if detector_manager is None:
+        from backend.app.detection import DetectorManager
+
+        detector_manager = DetectorManager(settings, logger)
     registry = ToolRegistry()
     registry.register(InspectImageTool())
     registry.register(CropImageTool())
     registry.register(AnalyzeImageTool())
+    registry.register(DetectObjectsTool())
     traces = ToolTraceStore(settings.tool_trace_limit)
-    context = ToolContext(settings, model_manager, logger, traces)
+    context = ToolContext(settings, model_manager, logger, traces, detector_manager)
     return registry, ToolExecutor(registry, context), traces
 
 
