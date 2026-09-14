@@ -29,10 +29,21 @@ class CategoryAggregate(BaseModel):
     source_artifact_ids: list[str] = Field(default_factory=list)
 
 
+class RasterAggregate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_id: str
+    artifact_type: str
+    metadata: dict = Field(default_factory=dict)
+    statistics: dict | None = None
+
+
 class WorkflowSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     original_image_artifact_id: str
     active_image_artifact_id: str
+    original_raster_artifact_id: str = ""
+    active_raster_artifact_id: str = ""
+    raster: RasterAggregate | None = None
     artifacts: list[WorkflowArtifactView] = Field(default_factory=list)
     detections: list[WorkflowDetection] = Field(default_factory=list)
     segmentations: list[WorkflowSegmentation] = Field(default_factory=list)
@@ -74,9 +85,23 @@ class ResultAggregator:
                 union_mask_area_ratio=union_ratio,
                 source_artifact_ids=sorted({item.source_artifact_id for item in detections}),
             )
+        raster_artifact = WorkflowController.artifact(
+            state, state.active_raster_artifact_id or state.original_raster_artifact_id
+        )
+        raster = None
+        if raster_artifact is not None:
+            raster = RasterAggregate(
+                artifact_id=raster_artifact.artifact_id,
+                artifact_type=raster_artifact.artifact_type,
+                metadata=raster_artifact.metadata,
+                statistics=state.raster_statistics.get(raster_artifact.artifact_id),
+            )
         return WorkflowSummary(
             original_image_artifact_id=state.original_artifact_id,
             active_image_artifact_id=state.active_image_artifact_id,
+            original_raster_artifact_id=state.original_raster_artifact_id,
+            active_raster_artifact_id=state.active_raster_artifact_id,
+            raster=raster,
             artifacts=WorkflowController.public_artifacts(state),
             detections=state.detections,
             segmentations=state.segmentations,
@@ -117,9 +142,36 @@ class ResultAggregator:
 
     @staticmethod
     def render_chinese(summary: WorkflowSummary) -> str:
-        if not summary.categories:
+        if not summary.categories and summary.raster is None:
             return ""
-        lines = ["结构化工作流结果："]
+        lines = []
+        if summary.raster is not None:
+            metadata = summary.raster.metadata
+            crs = metadata.get("crs") or "unknown"
+            lines.extend([
+                "遥感栅格结果：",
+                (
+                    f"- 当前 Raster：{summary.raster.artifact_id}；"
+                    f"尺寸 {metadata.get('width', '?')} × {metadata.get('height', '?')}；"
+                    f"波段 {metadata.get('band_count', '?')}；CRS {crs}。"
+                ),
+            ])
+            if metadata.get("resolution_x") is not None:
+                lines.append(
+                    f"- 分辨率：{metadata.get('resolution_x')} × "
+                    f"{metadata.get('resolution_y')}；NoData：{metadata.get('nodata')}。"
+                )
+            if summary.raster.statistics:
+                lines.append("- 波段统计：")
+                for item in summary.raster.statistics.get("bands", []):
+                    lines.append(
+                        f"  Band {item.get('band')}：min={item.get('min')}，"
+                        f"max={item.get('max')}，mean={item.get('mean')}，"
+                        f"std={item.get('std')}，有效像素={item.get('valid_pixel_count')}，"
+                        f"NoData={item.get('nodata_count')}。"
+                    )
+        if summary.categories:
+            lines.append("结构化工作流结果：")
         has_masks = False
         for name, item in summary.categories.items():
             text = (

@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from backend.app.models.errors import VlmError
+from backend.app.raster_errors import RasterError
 from backend.app.detection.errors import DetectorError
 from backend.app.open_vocabulary.errors import OpenVocabularyError
 from backend.app.segmentation.errors import SegmentationError
@@ -27,8 +28,8 @@ def summarize_tool_arguments(arguments: dict) -> dict:
     """Keep useful parameters while removing paths, prompts, and binary content."""
     summary = {}
     for key, value in arguments.items():
-        if key == "image_path" and value is not None:
-            summary["image_path"] = Path(str(value)).name
+        if key in {"image_path", "raster_path"} and value is not None:
+            summary[key] = Path(str(value)).name
         elif key == "prompt" and isinstance(value, str):
             summary["prompt_length"] = len(value)
         elif isinstance(value, bytes):
@@ -68,7 +69,8 @@ class ToolExecutor:
         except TimeoutError:
             result = self._failure(tool_name, "TOOL_TIMEOUT", "Tool execution timed out")
         except (
-            VlmError, DetectorError, OpenVocabularyError, SegmentationError, ToolExecutionError
+            VlmError, DetectorError, OpenVocabularyError, SegmentationError, ToolExecutionError,
+            RasterError,
         ) as exc:
             self.context.logger.exception("[%s] %s failed", execution_id, tool_name)
             result = self._failure(tool_name, exc.code, str(exc))

@@ -35,6 +35,9 @@ class AgentState(BaseModel):
     segmentations: list[WorkflowSegmentation] = Field(default_factory=list)
     original_artifact_id: str = ""
     active_image_artifact_id: str = ""
+    original_raster_artifact_id: str = ""
+    active_raster_artifact_id: str = ""
+    raster_statistics: dict[str, dict] = Field(default_factory=dict)
     requested_categories: list[str] = Field(default_factory=list)
     completed_actions: list[str] = Field(default_factory=list)
     failed_actions: list[str] = Field(default_factory=list)

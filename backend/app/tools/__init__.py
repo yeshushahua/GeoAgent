@@ -2,6 +2,9 @@
 from backend.app.tools.context import ToolContext
 from backend.app.tools.executor import ToolExecutor
 from backend.app.tools.registry import ToolRegistry
+from backend.app.tools.raster import (
+    CropRasterTool, InspectRasterTool, RasterPreviewTool, RasterStatisticsTool,
+)
 from backend.app.tools.trace import ToolTraceStore
 from backend.app.tools.utility import CropImageTool
 from backend.app.tools.vision import (
@@ -22,6 +25,10 @@ def build_tool_registry():
     registry.register(DetectObjectsTool())
     registry.register(DetectOpenVocabularyTool())
     registry.register(SegmentObjectsTool())
+    registry.register(InspectRasterTool())
+    registry.register(RasterPreviewTool())
+    registry.register(CropRasterTool())
+    registry.register(RasterStatisticsTool())
     return registry
 
 

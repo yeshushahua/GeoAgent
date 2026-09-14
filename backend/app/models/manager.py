@@ -32,6 +32,7 @@ class ModelManager:
         self._state = ModelState.UNLOADED
         self._last_error: str | None = None
         self._load_time_s: float | None = None
+        self._load_count = 0
         self._lock = RLock()
 
     @property
@@ -50,6 +51,7 @@ class ModelManager:
                 "model_path": str(self.settings.vlm_model_path),
                 "local_files_only": self.settings.hf_hub_offline,
                 "load_time_s": self._load_time_s,
+                "load_count": self._load_count,
                 "last_error": self._last_error,
                 "gpu_memory": get_gpu_memory().model_dump(),
             }
@@ -68,6 +70,7 @@ class ModelManager:
             try:
                 self._load_time_s = round(wrapper.load(), 3)
                 self._wrapper = wrapper
+                self._load_count += 1
                 self._state = ModelState.READY
             except Exception as exc:
                 self._wrapper = None

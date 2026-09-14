@@ -3,22 +3,22 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 6 — Multi-step Workflow.
+Current milestone: Phase 7 — Remote Sensing Extension.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
-The user uploads one ordinary RGB image and gives a natural-language task. A local
+The user uploads an ordinary RGB image or GeoTIFF and gives a natural-language task. A local
 Qwen3-VL policy model selects tools from registry-generated schemas, observes each
 ToolResult, optionally continues with another tool, and returns a structured final
 response. YOLO11s supplies closed-set COCO detection, YOLOE-26s-seg locates arbitrary
 text-prompt categories, and SAM 2.1 Base turns detector boxes into instance masks,
 pixel areas, area ratios, and overlays. The default Chinese UI calls the Agent API.
 Phase 6 adds explicit workflow state, stable artifact and detection IDs, dependency
-validation, partial failure recovery, and deterministic result aggregation for
-multi-step and multi-class tasks.
+validation, partial failure recovery, and deterministic result aggregation. Phase 7
+adds GeoTIFF metadata, georeferenced pixel-window crops, downsampled band previews,
+and block-wise raw-value statistics to the same Agent and artifact graph.
 
 This is a small Tool-enabled Vision Agent with autonomous tool selection. It uses
-an explicit bounded loop rather than LangGraph or another agent framework. Tracking,
-GeoTIFF/GIS processing, RAG, memory and fine-tuning are not implemented.
+an explicit bounded loop rather than LangGraph or another agent framework. Tracking, advanced GIS analysis, RAG, memory and fine-tuning are not implemented.
 
 ## Architecture
 
@@ -40,6 +40,11 @@ GeoTIFF/GIS processing, RAG, memory and fine-tuning are not implemented.
                                                         -> text boxes + preview
     segment_objects Tool -> SegmentationManager -> lazy SAM 2.1 Base
                                                -> PNG masks + overlay + pixel area
+
+    GeoTIFF -> inspect_raster -> structured CRS / transform / bounds / band metadata
+            -> crop_raster -> georeferenced raster_crop
+            -> raster_preview -> downsampled PNG -> optional image tools / Qwen
+            -> raster_statistics -> block-wise raw-value band statistics
 
 Model code never returns FastAPI responses. InferenceResult belongs to the model
 layer and `analyze_image` converts it to the shared ToolResult contract.
@@ -250,12 +255,23 @@ leaving substantial headroom on the 24 GB RTX 4090.
 
 Default tests use mocks and do not load the 4B model:
 
-    .\.venv\Scripts\python.exe -m pytest
+    .\.venv\Scripts\python.exe -m pytest -m "not integration"
 
-The marked integration test performs offline local loading and real RTX 4090
-inference:
+Real RTX 4090 integrations must run one file per independent Python process.
+Do not combine all phases with `pytest -m integration`; process exit is the
+isolation boundary for the CUDA context, model singletons, and allocator state:
 
-    .\.venv\Scripts\python.exe -m pytest -m integration -s
+    .\.venv\Scripts\python.exe -m pytest backend\tests\test_detection_integration.py -m integration -s
+    .\.venv\Scripts\python.exe -m pytest backend\tests\test_phase5_integration.py -m integration -s
+    .\.venv\Scripts\python.exe -m pytest backend\tests\test_phase6_integration.py -m integration -s
+    .\.venv\Scripts\python.exe -m pytest backend\tests\test_phase7_integration.py -m integration -s
+    .\.venv\Scripts\python.exe -m pytest backend\tests\test_phase7_cross_phase_smoke.py -m integration -s
+
+Each integration pytest process has a 30-minute hard limit. Stop earlier after
+15 minutes without stage progress, an unexplained sustained allocation above
+22 GiB, any CUDA/OOM/device error, or visible system instability. Record a time
+limit as `TIMEOUT / PERFORMANCE ISSUE`, end the process, inspect GPU/process and
+Agent metrics, and retry only in a new clean process.
 
 With FastAPI running:
 
@@ -271,6 +287,8 @@ With FastAPI and Gradio running:
     .\.venv\Scripts\python.exe -m scripts.verify_phase5_ui
     .\.venv\Scripts\python.exe -m scripts.verify_phase6_api
     .\.venv\Scripts\python.exe -m scripts.verify_phase6_ui
+    .\.venv\Scripts\python.exe -m scripts.verify_phase7_api
+    .\.venv\Scripts\python.exe -m scripts.verify_phase7_ui
 
 The integration suite includes real Qwen Agent decisions for a metadata-only task,
 a semantic-analysis task, and a multi-step inspect/crop/analyze task. It verifies
@@ -299,6 +317,11 @@ invalid-artifact recovery, per-instance segmentation recovery, union-mask catego
 areas, compact planner observations, and workflow metrics. See
 `docs/phase6-validation.md` for measured RTX 4090 and live API/UI evidence.
 
+Phase 7 integration covers GeoTIFF detection, structured metadata, 2–98 percentile
+preview, pixel-window crop with updated affine transform, block-wise statistics,
+raster/image artifact separation, and the real `GeoTIFF -> preview -> analyze_image`
+Agent path. See `docs/phase7-validation.md` for RTX 4090 and live API/UI evidence.
+
 ## Benchmark
 
 Generate the five original, lightweight RGB scenes and run the full benchmark:
@@ -323,4 +346,4 @@ weight formats, large TIFF files and logs are ignored. The small sample images a
 original project assets. Do not commit user images, credentials, model files,
 Hub cache, benchmark output or datasets.
 
-No commit or push is performed by the Phase 6 workflow.
+No commit or push is performed by the Phase 7 workflow.

@@ -40,6 +40,34 @@ Workflow rules:
   reported as unavailable. Use the structured result aggregation as authoritative.
 - Unless the user explicitly asks for stricter or looser detection, omit confidence
   and iou_threshold so the Tool Schema defaults are used.
+Remote sensing rules:
+- When original_raster_artifact_id is present, the uploaded asset is a GeoTIFF.
+  The first call for a new raster MUST be inspect_raster(raster_path=active_raster).
+  Do not use inspect_image, crop_image, or analyze_image on the GeoTIFF binary.
+- inspect_raster is authoritative for raster width, height, band count, dtype, CRS,
+  affine transform, resolution, bounds, NoData, and band descriptions.
+- To display a raster, call raster_preview only after inspect_raster. Use one-based
+  bands. Omit bands for a one-band raster or a raster with at least three bands so
+  schema defaults choose Band 1 or Bands 1,2,3. A two-band raster requires an
+  explicit valid one-band selection.
+- To visually understand GeoTIFF content, use inspect_raster, then raster_preview,
+  then analyze_image with the returned raster-preview artifact ID. Never pass the
+  GeoTIFF directly to a vision model.
+- raster_preview is a display artifact and image-model input. It never becomes
+  active_raster and contains no complete geospatial semantics. Detection on it is
+  in preview pixel space; never claim its boxes map to original raster pixels.
+- crop_raster and raster_statistics always use active_raster or another raster
+  source ID, never raster_preview. crop_raster creates a GeoTIFF, preserves CRS,
+  resolution, bands, dtype, NoData, and updates transform and bounds. Its output
+  becomes active_raster.
+- For a user-named raster half or quadrant, crop_raster MUST use the matching
+  region enum, such as region="top_left_quarter". Do not manually calculate row
+  or column endpoints for a named region. For an arbitrary numeric window, provide
+  all four explicit pixel coordinates derived from the current raster metadata.
+- Statistics use original values and exclude NoData, NaN, and Inf. Do not infer
+  physical area, reproject, transform coordinates, calculate indices, or perform
+  any vector/GIS operation.
+
 Mandatory selection policy:
 - Every capability the user explicitly requests is a required workflow goal. Do not
   skip an explicit inspection, crop, detection, segmentation, analysis, or summary
@@ -80,17 +108,18 @@ Mandatory selection policy:
 - A detection-only request uses detect_objects directly and then returns final.
   Do not call inspect_image or analyze_image unless the user also requests their
   distinct capability.
-- When the user explicitly requests detection followed by broader visual analysis,
-  call detect_objects first, then call analyze_image. The analyze_image prompt and
-  final answer must treat the structured detection observation as authoritative
-  for classes, counts, boxes, and confidence; never guess replacements.
-  A successful detection observation is NOT enough to finish an explicitly
-  requested two-stage detect-and-analyze task. The required sequence is
-  detect_objects -> analyze_image -> final. For example, Chinese "先检测图中的目标，
-  再结合检测结果分析这张图片" requires exactly those two tools in that order.
-  analyze_image must use the same image_path that detect_objects examined and must
-  receive a prompt grounded in the detection observation. The annotated image is
-  a display artifact, not a replacement analysis input.
+- A detector observation grounds only classes, counts, boxes, and confidence. It
+  does not ground broader visual content, scene meaning, or relationships. When a
+  user requests both detection and broader visual analysis, complete both distinct
+  goals: call the appropriate detector, then analyze_image, then final. The
+  analyze_image prompt and final answer must treat the structured detector result
+  as authoritative. analyze_image must use the same analysis-source artifact that
+  the detector examined; an annotated overlay is display-only.
+- Completing one Tool call never completes unrelated explicit goals. Before every
+  final decision, compare the original request's distinct requested capabilities
+  with successful Tool observations. A final decision is invalid while any explicit
+  inspection, crop, detection, segmentation, visual analysis, statistics, preview,
+  or summary goal lacks a grounded result or a truthful unavailable result.
 For region requests whose coordinates depend on image dimensions, inspect first,
 then compute coordinates from the observation. After crop_image, any requested
 analysis of the crop MUST use the returned crop artifact path, not the original.
@@ -122,9 +151,11 @@ from the current source artifact's own inspect_image observation.
 These region rules apply only when the user requests a crop or region. A request
 only about visible content still MUST call analyze_image immediately and MUST NOT
 call inspect_image first, even if the request includes a run number or label.
-After every observation, decide again whether another tool is needed or a final
-answer is supported. Do not repeat an identical tool call. If a tool fails, either
-correct the call or explain the limitation. Do not reveal chain-of-thought.
+After every observation, re-read the complete original request and compare every
+explicit sub-goal with the successful observation history. Choose final only when
+all sub-goals are grounded or truthfully unavailable. Planner-written prose cannot
+replace a missing Tool observation. Do not repeat an identical tool call. If a tool
+fails, either correct the call or explain the limitation. Do not reveal chain-of-thought.
 After one successful analyze_image observation for a content-only request, the
 next decision MUST be final. Do not call analyze_image again with a rephrased
 prompt to inspect the same image.
@@ -139,7 +170,9 @@ or
 {"type":"final","answer":"user-facing answer"}
 
 Default final answers to Simplified Chinese. Use English only when the user
-explicitly requests English. The controller selects and sequences tools; it must
+explicitly requests English. Keep final.answer concise: at most 80 Chinese characters
+or 50 English words. Do not repeat structured metadata, counts, or statistics that
+ResultAggregator will append. The controller selects and sequences tools; it must
 not substitute an unsupported visual claim for an analyze_image observation."""
 
 
@@ -152,8 +185,11 @@ def build_planner_prompt(
     aggregated = ResultAggregator.aggregate(state)
     context = {
         "user_request": state.user_message,
+        "input_kind": "raster" if state.original_raster_artifact_id else "image",
         "original_image_artifact_id": state.original_artifact_id,
         "active_image_artifact_id": state.active_image_artifact_id,
+        "original_raster_artifact_id": state.original_raster_artifact_id,
+        "active_raster_artifact_id": state.active_raster_artifact_id,
         "max_new_tokens_for_analyze_image": state.max_new_tokens,
         "available_tools": definitions,
         "workflow_artifacts": [
@@ -163,6 +199,8 @@ def build_planner_prompt(
         "observations": WorkflowController.compact_observations(state),
         "remaining_steps": state.max_steps - state.step_count,
     }
+    if aggregated.raster is not None:
+        context["raster_result"] = aggregated.raster.model_dump(mode="json")
     # Before segmentation has actually run, fields such as ``segmented: 0`` can
     # look like pending work to a small local planner even for detection-only
     # requests. Detection observations already contain everything needed to
@@ -189,13 +227,16 @@ def build_planner_prompt(
                 )
             else:
                 context["next_action_contract"] = (
-                    "Bounding boxes being available does not itself authorize segmentation. "
-                    "Re-read the original user request. If it asks only to detect/find/locate/count, "
-                    "the next decision must be final. Only an explicit request for masks, precise "
-                    "segmentation/outlines, extraction, or pixel area authorizes segment_objects. "
-                    f"If authorized, segment_objects.image_path must be {source!s}; pass the "
-                    "workflow detection_ids from the latest compact observation. Detector preview "
-                    "artifacts are unavailable as model inputs."
+                    "The latest detector observation grounds only classes, counts, boxes, and "
+                    "confidence. Re-read the complete original request and identify every distinct "
+                    "requested capability before choosing final. If detection is the only goal, "
+                    "choose final. If broader visual or scene analysis is also a goal and no "
+                    "successful analyze_image observation exists, the next decision MUST be "
+                    f"analyze_image with image_path={source!s} and a prompt grounded in the detector "
+                    "observation. If masks, precise outlines, extraction, or pixel-area ratios are "
+                    "also requested, segment_objects is required with the workflow detection_ids "
+                    f"and image_path={source!s}. Complete every requested branch before final. "
+                    "Detector preview artifacts are display-only and unavailable as model inputs."
                 )
     parts = ["Runtime context:", json.dumps(context, ensure_ascii=False)]
     if "next_action_contract" in context:

@@ -4,7 +4,8 @@ import json
 import httpx
 
 from frontend.app import (
-    PLACEHOLDER, _agent_markdown, _post_agent, analyze, build_manual_form_fields,
+    PLACEHOLDER, _agent_markdown, _post_agent, _raster_markdown, analyze,
+    build_manual_form_fields,
     _ui_safe_result, chat, fetch_status, manual_parameter_visibility,
     manual_tool_definitions,
 )
@@ -86,7 +87,8 @@ def test_manual_tool_fields_are_driven_by_registry_schema():
     definitions = manual_tool_definitions()
     assert set(definitions) == {
         "inspect_image", "crop_image", "analyze_image", "detect_objects",
-        "detect_open_vocab", "segment_objects",
+        "detect_open_vocab", "segment_objects", "inspect_raster", "raster_preview",
+        "crop_raster", "raster_statistics",
     }
     expected = {
         "inspect_image": set(),
@@ -95,6 +97,13 @@ def test_manual_tool_fields_are_driven_by_registry_schema():
         "detect_objects": {"classes", "confidence", "iou_threshold"},
         "detect_open_vocab": {"classes", "confidence", "iou_threshold"},
         "segment_objects": {"boxes", "detection_ids"},
+        "inspect_raster": set(),
+        "raster_preview": {
+            "bands", "stretch", "lower_percentile", "upper_percentile",
+            "max_size", "resampling",
+        },
+        "crop_raster": {"region", "row_start", "row_end", "col_start", "col_end"},
+        "raster_statistics": {"bands"},
     }
     for name, fields in expected.items():
         visible = manual_parameter_visibility(definitions[name])
@@ -114,3 +123,43 @@ def test_manual_form_serializes_only_selected_tool_schema():
     ]
     assert fields["confidence"] == 0.25 and fields["iou_threshold"] == 0.45
     assert not {"prompt", "max_new_tokens", "x1", "boxes"}.intersection(fields)
+
+
+def test_raster_panels_show_metadata_statistics_and_artifact_flow():
+    result = {
+        "run_id": "raster-run",
+        "steps": [{
+            "index": 1, "decision_type": "tool_call", "tool_name": "inspect_raster",
+            "success": True, "duration_ms": 2.0,
+            "observation_summary": {"width": 256, "height": 192, "band_count": 3,
+                                    "crs": "EPSG:32647", "source_artifact_id": "raster-001"},
+        }, {
+            "index": 2, "decision_type": "tool_call", "tool_name": "raster_statistics",
+            "success": True, "duration_ms": 3.0,
+            "observation_summary": {"bands": [{"band": 1}], "read_strategy": "block_windows",
+                                    "source_artifact_id": "raster-001"},
+        }],
+        "workflow": {
+            "active_image_artifact_id": "raster-preview-001",
+            "active_raster_artifact_id": "raster-001",
+            "raster": {
+                "artifact_id": "raster-001", "artifact_type": "raster",
+                "metadata": {"width": 256, "height": 192, "band_count": 3,
+                             "dtypes": ["uint16"] * 3, "crs": "EPSG:32647",
+                             "resolution_x": 10, "resolution_y": 10, "nodata": 0,
+                             "bounds": {"left": 100, "bottom": 200, "right": 2660, "top": 2120}},
+                "statistics": {"bands": [{"band": 1, "min": 3, "max": 15,
+                                           "mean": 9, "std": 4, "valid_pixel_count": 13,
+                                           "nodata_count": 3}]},
+            },
+            "artifacts": [], "categories": {},
+        },
+    }
+    workflow_panel = _agent_markdown(result)
+    raster_panel = _raster_markdown(result)
+    assert "当前 Raster：`raster-001`" in workflow_panel
+    assert "Raster：**256 × 192**" in workflow_panel
+    assert "读取策略 `block_windows`" in workflow_panel
+    assert all(text in raster_panel for text in (
+        "Raster Information", "EPSG:32647", "256 × 192", "Band Statistics", "valid 13"
+    ))

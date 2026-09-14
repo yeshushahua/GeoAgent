@@ -107,8 +107,9 @@ async def test_dynamic_discovery_single_tool_and_final(settings):
     assert [step.tool_name for step in response.steps if step.tool_name] == ["inspect_image"]
     assert manager.load_calls == 1
     assert planner.calls[0]["definitions"] == [
-        "analyze_image", "crop_image", "detect_objects", "detect_open_vocab",
-        "inspect_image", "segment_objects",
+        "analyze_image", "crop_image", "crop_raster", "detect_objects",
+        "detect_open_vocab", "inspect_image", "inspect_raster", "raster_preview",
+        "raster_statistics", "segment_objects",
     ]
     trace = traces.list()[0].model_dump()
     assert trace["prompt_length"] == len("告诉我尺寸")
@@ -165,6 +166,20 @@ async def test_multistep_artifact_propagation(settings):
     assert (crop_arguments["x2"], crop_arguments["y2"]) != (120, 75)
     assert planner.calls[2]["observations"] == 2
     assert response.steps[2].arguments_summary["image_path"] == "crop-001"
+
+
+def test_planner_requires_all_explicit_subgoals_before_final():
+    required = (
+        "Completing one Tool call never completes unrelated explicit goals",
+        "original request's distinct requested capabilities",
+        "Planner-written prose cannot",
+        "replace a missing Tool observation",
+        "does not ground broader visual content",
+        "at most 80 Chinese characters",
+        "ResultAggregator will append",
+    )
+    assert all(fragment in AGENT_SYSTEM_PROMPT for fragment in required)
+    assert "先检测图中的目标" not in AGENT_SYSTEM_PROMPT
 
 
 def test_spatial_quadrant_policy_and_integer_rule_are_explicit(settings):

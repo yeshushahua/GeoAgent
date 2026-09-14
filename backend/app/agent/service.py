@@ -326,9 +326,13 @@ class VisionAgent:
                 )
                 if detection_observations:
                     summary["detection_observation_count"] = detection_observations
-            elif key == "image_path" and isinstance(value, str):
+            elif key in {"image_path", "raster_path"} and isinstance(value, str):
                 try:
-                    summary[key] = WorkflowController.resolve_image(state, value).artifact_id
+                    resolver = (
+                        WorkflowController.resolve_raster
+                        if key == "raster_path" else WorkflowController.resolve_image
+                    )
+                    summary[key] = resolver(state, value).artifact_id
                 except WorkflowDependencyError:
                     summary[key] = Path(value).name
             else:
@@ -344,7 +348,7 @@ class VisionAgent:
         executed = result.metadata.get("arguments_summary", {})
         if isinstance(executed, dict):
             for key, value in executed.items():
-                if key not in {"image_path", "prompt_length", "detection_ids"}:
+                if key not in {"image_path", "raster_path", "prompt_length", "detection_ids"}:
                     if key == "boxes" and call.arguments.get("detection_ids"):
                         continue
                     summary[key] = value
@@ -360,6 +364,20 @@ class VisionAgent:
             answer = result.data.get("answer")
             return {"answer_length": len(answer)} if isinstance(answer, str) else {}
         allowed = {
+            "inspect_raster": {
+                "width", "height", "band_count", "dtypes", "driver", "crs", "epsg",
+                "transform", "resolution_x", "resolution_y", "bounds", "nodata",
+                "band_descriptions",
+            },
+            "raster_preview": {
+                "source_width", "source_height", "preview_width", "preview_height",
+                "bands", "band_descriptions", "stretch", "percentile_range",
+                "resampling", "read_strategy",
+            },
+            "crop_raster": {"window", "metadata", "read_strategy"},
+            "raster_statistics": {
+                "width", "height", "bands", "read_strategy", "total_blocks_read",
+            },
             "inspect_image": {"width", "height", "mode", "format", "file_size", "aspect_ratio"},
             "crop_image": {"width", "height"},
             "detect_objects": {

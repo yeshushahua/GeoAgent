@@ -47,12 +47,13 @@ def test_load_infer_unload_reload(settings):
     manager = ModelManager(settings, factory=FakeWrapper)
     assert manager.state == ModelState.UNLOADED
     assert manager.load_model()["state"] == "READY"
-    assert manager.load_model()["state"] == "READY"
+    assert manager.load_model()["load_count"] == 1
     result = manager.infer(Image.new("RGB", (32, 24)), "hello", 64)
     assert result.text == "seen: hello"
     assert manager.plan("choose", 64, "policy").text == "planned: policy|choose"
     assert manager.unload_model()["state"] == "UNLOADED"
-    assert manager.load_model()["state"] == "READY"
+    reloaded = manager.load_model()
+    assert reloaded["state"] == "READY" and reloaded["load_count"] == 2
 
 
 def test_infer_requires_loaded_model(settings):

@@ -27,6 +27,14 @@ ERROR_STATUS = {
     "DEPENDENCY_MISMATCH": 422,
     "INVALID_BBOX": 422,
     "NO_VALID_BOXES": 422,
+    "INVALID_RASTER": 415,
+    "RASTER_OPEN_FAILED": 415,
+    "BAND_NOT_FOUND": 422,
+    "INVALID_WINDOW": 422,
+    "EMPTY_WINDOW": 422,
+    "UNSUPPORTED_RASTER_DTYPE": 422,
+    "PREVIEW_FAILED": 422,
+    "RASTER_METADATA_REQUIRED": 422,
     "DETECTOR_CUDA_UNAVAILABLE": 503,
     "DETECTOR_FILES_MISSING": 503,
     "DETECTOR_BUSY": 409,
@@ -86,12 +94,25 @@ async def execute_tool(
     classes: str | None = Form(default=None),
     boxes: str | None = Form(default=None),
     detection_ids: str | None = Form(default=None),
+    raster_path: str | None = Form(default=None),
+    bands: str | None = Form(default=None),
+    stretch: str | None = Form(default=None),
+    lower_percentile: str | None = Form(default=None),
+    upper_percentile: str | None = Form(default=None),
+    max_size: str | None = Form(default=None),
+    resampling: str | None = Form(default=None),
+    region: str | None = Form(default=None),
+    row_start: str | None = Form(default=None),
+    row_end: str | None = Form(default=None),
+    col_start: str | None = Form(default=None),
+    col_end: str | None = Form(default=None),
 ):
     temporary: Path | None = None
     try:
         if image is not None:
             temporary = await store_temporary_upload(request.app.state.settings, image)
             image_path = str(temporary)
+            raster_path = str(temporary)
         parsed_classes = None
         if classes is not None:
             try:
@@ -115,7 +136,25 @@ async def execute_tool(
                 parsed_detection_ids = [
                     item.strip() for item in detection_ids.split(",") if item.strip()
                 ]
+        parsed_bands = None
+        if bands is not None:
+            try:
+                parsed_bands = json.loads(bands)
+            except json.JSONDecodeError:
+                parsed_bands = [int(item.strip()) for item in bands.split(",") if item.strip()]
         raw = {
+            "raster_path": raster_path,
+            "bands": parsed_bands,
+            "stretch": stretch,
+            "lower_percentile": lower_percentile,
+            "upper_percentile": upper_percentile,
+            "max_size": max_size,
+            "resampling": resampling,
+            "region": region,
+            "row_start": row_start,
+            "row_end": row_end,
+            "col_start": col_start,
+            "col_end": col_end,
             "image_path": image_path,
             "prompt": prompt,
             "max_new_tokens": max_new_tokens,

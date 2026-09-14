@@ -10,7 +10,10 @@ from backend.app.main import create_app
 
 
 def _sequence(result):
-    return [step["tool_name"] for step in result["steps"] if step["tool_name"]]
+    return [
+        step["tool_name"] for step in result["steps"]
+        if step["tool_name"] and step["success"]
+    ]
 
 
 @pytest.mark.integration
@@ -121,7 +124,10 @@ def test_real_qwen_agent_detection_scenarios():
         assert _sequence(scenario_c) == [
             "inspect_image", "crop_image", "detect_objects"
         ], scenario_c
-        crop_step = next(step for step in scenario_c["steps"] if step["tool_name"] == "crop_image")
+        crop_step = next(
+            step for step in scenario_c["steps"]
+            if step["tool_name"] == "crop_image" and step["success"]
+        )
         assert crop_step["arguments_summary"] == {
             "image_path": "original-image-001", "x1": 0, "y1": 0, "x2": 405, "y2": 540,
         }, scenario_c

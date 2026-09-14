@@ -19,3 +19,4 @@ qwen-vl-utils==0.0.14
 ultralytics==8.4.148
 clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7
 huggingface-hub>=0.34,<2
+rasterio>=1.4,<2

@@ -7,6 +7,7 @@ from typing import Any, Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from backend.app.detection.schemas import BoundingBox
+from backend.app.raster import is_raster_candidate
 from backend.app.schemas.tool_result import ToolError, ToolResult
 
 if TYPE_CHECKING:
@@ -15,7 +16,8 @@ if TYPE_CHECKING:
 
 ArtifactType = Literal[
     "original_image", "cropped_image", "detection_overlay",
-    "segmentation_overlay", "mask", "image",
+    "segmentation_overlay", "mask", "image", "raster", "raster_crop",
+    "raster_preview",
 ]
 
 
@@ -23,7 +25,7 @@ class WorkflowArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_id: str = Field(pattern=r"^[a-z][a-z-]*-[0-9]{3}$")
     artifact_type: ArtifactType
-    role: Literal["analysis_source", "visualization"]
+    role: Literal["analysis_source", "raster_source", "visualization"]
     source_tool: str
     path: str
     parent_artifact_id: str | None = None
@@ -35,7 +37,7 @@ class WorkflowArtifactView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_id: str
     artifact_type: ArtifactType
-    role: Literal["analysis_source", "visualization"]
+    role: Literal["analysis_source", "raster_source", "visualization"]
     source_tool: str
     basename: str
     parent_artifact_id: str | None = None
@@ -90,16 +92,29 @@ class WorkflowController:
 
     @staticmethod
     def initialize(state, image_path: str) -> None:
-        state.workflow_artifacts.append(WorkflowArtifact(
-            artifact_id="original-image-001",
-            artifact_type="original_image",
-            role="analysis_source",
-            source_tool="user_upload",
-            path=image_path,
-            created_step=0,
-        ))
-        state.original_artifact_id = "original-image-001"
-        state.active_image_artifact_id = "original-image-001"
+        path = Path(image_path)
+        if is_raster_candidate(path):
+            state.workflow_artifacts.append(WorkflowArtifact(
+                artifact_id="raster-001",
+                artifact_type="raster",
+                role="raster_source",
+                source_tool="user_upload",
+                path=image_path,
+                created_step=0,
+            ))
+            state.original_raster_artifact_id = "raster-001"
+            state.active_raster_artifact_id = "raster-001"
+        else:
+            state.workflow_artifacts.append(WorkflowArtifact(
+                artifact_id="original-image-001",
+                artifact_type="original_image",
+                role="analysis_source",
+                source_tool="user_upload",
+                path=image_path,
+                created_step=0,
+            ))
+            state.original_artifact_id = "original-image-001"
+            state.active_image_artifact_id = "original-image-001"
         state.pending_goals = ["Complete every requested task before returning the final answer"]
 
     @staticmethod
@@ -127,7 +142,7 @@ class WorkflowController:
         artifact_id = aliases.get(reference, reference)
         artifact = cls.artifact(state, artifact_id)
         if artifact is not None:
-            if artifact.role != "analysis_source":
+            if artifact.role != "analysis_source" and artifact.artifact_type != "raster_preview":
                 raise WorkflowDependencyError(
                     "INVALID_ARTIFACT_ROLE",
                     f"Artifact {artifact_id} is display-only and cannot be a model input",
@@ -156,9 +171,60 @@ class WorkflowController:
         )
 
     @classmethod
+    def resolve_raster(cls, state, reference: str) -> WorkflowArtifact:
+        aliases = {
+            "original_raster": state.original_raster_artifact_id,
+            "original-raster": state.original_raster_artifact_id,
+            "active_raster": state.active_raster_artifact_id,
+            "active-raster": state.active_raster_artifact_id,
+        }
+        artifact_id = aliases.get(reference, reference)
+        artifact = cls.artifact(state, artifact_id)
+        if artifact is not None:
+            if artifact.role != "raster_source":
+                raise WorkflowDependencyError(
+                    "INVALID_ARTIFACT_ROLE",
+                    f"Artifact {artifact_id} is not a geospatial raster source",
+                    {"artifact_id": artifact_id, "role": artifact.role},
+                )
+            return artifact
+        by_path = cls.artifact_for_path(state, reference)
+        if by_path is not None and by_path.role == "raster_source":
+            return by_path
+        basename_matches = [
+            item for item in state.workflow_artifacts
+            if Path(item.path).name == reference and item.role == "raster_source"
+        ]
+        if len(basename_matches) == 1:
+            return basename_matches[0]
+        raise WorkflowDependencyError(
+            "ARTIFACT_NOT_FOUND",
+            f"Workflow raster artifact does not exist: {reference}",
+            {
+                "requested": Path(reference).name,
+                "available_artifact_ids": [
+                    item.artifact_id for item in state.workflow_artifacts
+                    if item.role == "raster_source"
+                ],
+            },
+        )
+
+    @classmethod
     def prepare_call(cls, state, call: AgentToolCall) -> tuple[AgentToolCall, str | None]:
         arguments = dict(call.arguments)
         source_artifact_id = None
+        if "raster_path" in arguments and arguments["raster_path"] is not None:
+            source = cls.resolve_raster(state, str(arguments["raster_path"]))
+            source_artifact_id = source.artifact_id
+            arguments["raster_path"] = source.path
+            if call.tool_name != "inspect_raster" and not {
+                "width", "height", "band_count"
+            }.issubset(source.metadata):
+                raise WorkflowDependencyError(
+                    "RASTER_METADATA_REQUIRED",
+                    "Inspect the raster before preview, crop, or statistics",
+                    {"artifact_id": source.artifact_id, "required_tool": "inspect_raster"},
+                )
         if "image_path" in arguments and arguments["image_path"] is not None:
             source = cls.resolve_image(state, str(arguments["image_path"]))
             source_artifact_id = source.artifact_id
@@ -209,7 +275,10 @@ class WorkflowController:
     ) -> str:
         arguments = dict((prepared or original).arguments)
         if source_artifact_id:
-            arguments["image_path"] = source_artifact_id
+            if "raster_path" in arguments:
+                arguments["raster_path"] = source_artifact_id
+            elif "image_path" in arguments:
+                arguments["image_path"] = source_artifact_id
         classes = arguments.get("classes")
         if isinstance(classes, list):
             arguments["classes"] = sorted(str(item).strip().casefold() for item in classes)
@@ -247,6 +316,8 @@ class WorkflowController:
             "segmentation-overlay": sum(item.artifact_type == "segmentation_overlay" for item in state.workflow_artifacts),
             "mask": sum(item.artifact_type == "mask" for item in state.workflow_artifacts),
             "image": sum(item.artifact_type == "image" for item in state.workflow_artifacts),
+            "raster-crop": sum(item.artifact_type == "raster_crop" for item in state.workflow_artifacts),
+            "raster-preview": sum(item.artifact_type == "raster_preview" for item in state.workflow_artifacts),
         }
         return f"{prefix}-{counters.get(prefix, 0) + 1:03d}"
 
@@ -261,6 +332,8 @@ class WorkflowController:
             "segmentation_overlay": "segmentation-overlay",
             "mask": "mask",
             "image": "image",
+            "raster_crop": "raster-crop",
+            "raster_preview": "raster-preview",
         }[artifact_type]
         record = WorkflowArtifact(
             artifact_id=cls._next_id(state, prefix),
@@ -287,7 +360,26 @@ class WorkflowController:
                 state.warnings.append(f"{result.error.code}: {result.error.message}")
             return
         state.completed_actions.append(action)
-        if original_call.tool_name == "inspect_image" and source_artifact_id:
+        if original_call.tool_name == "inspect_raster" and source_artifact_id:
+            artifact = cls.artifact(state, source_artifact_id)
+            if artifact:
+                artifact.metadata.update(result.data)
+        elif original_call.tool_name == "raster_preview" and result.artifacts:
+            preview = cls._register_artifact(
+                state, result.artifacts[0], "raster_preview", "visualization",
+                original_call.tool_name, source_artifact_id, step, result.data,
+            )
+            state.active_image_artifact_id = preview.artifact_id
+        elif original_call.tool_name == "crop_raster" and result.artifacts:
+            crop = cls._register_artifact(
+                state, result.artifacts[0], "raster_crop", "raster_source",
+                original_call.tool_name, source_artifact_id, step,
+                result.data.get("metadata", {}),
+            )
+            state.active_raster_artifact_id = crop.artifact_id
+        elif original_call.tool_name == "raster_statistics" and source_artifact_id:
+            state.raster_statistics[source_artifact_id] = result.data
+        elif original_call.tool_name == "inspect_image" and source_artifact_id:
             artifact = cls.artifact(state, source_artifact_id)
             if artifact:
                 artifact.metadata.update({
@@ -414,6 +506,60 @@ class WorkflowController:
             }
             if not result.success:
                 item["error"] = result.error.model_dump(mode="json") if result.error else None
+            elif result.tool == "inspect_raster":
+                item["raster"] = {
+                    key: result.data.get(key) for key in (
+                        "width", "height", "band_count", "dtypes", "driver", "crs",
+                        "epsg", "resolution_x", "resolution_y", "bounds", "nodata",
+                        "band_descriptions",
+                    )
+                }
+                item["source_artifact_id"] = next(
+                    (
+                        artifact.artifact_id for artifact in state.workflow_artifacts
+                        if artifact.created_step == 0 and artifact.role == "raster_source"
+                    ),
+                    state.active_raster_artifact_id,
+                )
+            elif result.tool == "raster_preview":
+                item.update({
+                    "source_artifact_id": next(
+                        (
+                            artifact.parent_artifact_id for artifact in reversed(state.workflow_artifacts)
+                            if artifact.created_step == observation.step
+                            and artifact.artifact_type == "raster_preview"
+                        ),
+                        None,
+                    ),
+                    "active_image_artifact_id": state.active_image_artifact_id,
+                    "preview_size": {
+                        "width": result.data.get("preview_width"),
+                        "height": result.data.get("preview_height"),
+                    },
+                    "bands": result.data.get("bands", []),
+                    "stretch": result.data.get("stretch"),
+                })
+            elif result.tool == "crop_raster":
+                item.update({
+                    "active_raster_artifact_id": state.active_raster_artifact_id,
+                    "window": result.data.get("window"),
+                    "metadata": {
+                        key: result.data.get("metadata", {}).get(key)
+                        for key in ("width", "height", "crs", "resolution_x", "resolution_y", "bounds")
+                    },
+                })
+            elif result.tool == "raster_statistics":
+                item.update({
+                    "source_artifact_id": next(
+                        (
+                            artifact_id for artifact_id, stats in state.raster_statistics.items()
+                            if stats is result.data or stats == result.data
+                        ),
+                        state.active_raster_artifact_id,
+                    ),
+                    "bands": result.data.get("bands", []),
+                    "read_strategy": result.data.get("read_strategy"),
+                })
             elif result.tool == "inspect_image":
                 item["image"] = {key: result.data.get(key) for key in ("width", "height", "format", "mode")}
             elif result.tool == "crop_image":

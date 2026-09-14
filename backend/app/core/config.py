@@ -45,13 +45,13 @@ class Settings(BaseSettings):
     segmentation_device: Literal["cuda:0"] = "cuda:0"
     segmentation_imgsz: int = Field(default=1024, ge=512, le=2048)
     app_name: str = "GeoAgent"
-    app_version: str = "0.7.0"
+    app_version: str = "0.8.0"
     tool_trace_limit: int = Field(default=50, ge=1, le=1000)
     tool_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     agent_default_max_steps: int = Field(default=6, ge=1, le=10)
     agent_trace_limit: int = Field(default=50, ge=1, le=1000)
     agent_repair_attempts: int = Field(default=1, ge=0, le=2)
-    agent_planner_max_new_tokens: int = Field(default=256, ge=64, le=512)
+    agent_planner_max_new_tokens: int = Field(default=128, ge=64, le=512)
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_host: str = "127.0.0.1"
