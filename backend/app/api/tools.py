@@ -21,6 +21,12 @@ ERROR_STATUS = {
     "CUDA_OUT_OF_MEMORY": 507,
     "TOOL_TIMEOUT": 504,
     "TOOL_EXECUTION_FAILED": 500,
+    "ARTIFACT_NOT_FOUND": 422,
+    "INVALID_ARTIFACT_ROLE": 422,
+    "DETECTION_NOT_FOUND": 422,
+    "DEPENDENCY_MISMATCH": 422,
+    "INVALID_BBOX": 422,
+    "NO_VALID_BOXES": 422,
     "DETECTOR_CUDA_UNAVAILABLE": 503,
     "DETECTOR_FILES_MISSING": 503,
     "DETECTOR_BUSY": 409,
@@ -79,6 +85,7 @@ async def execute_tool(
     iou_threshold: str | None = Form(default=None),
     classes: str | None = Form(default=None),
     boxes: str | None = Form(default=None),
+    detection_ids: str | None = Form(default=None),
 ):
     temporary: Path | None = None
     try:
@@ -100,6 +107,14 @@ async def execute_tool(
                 parsed_boxes = json.loads(boxes)
             except json.JSONDecodeError:
                 parsed_boxes = None
+        parsed_detection_ids = None
+        if detection_ids is not None:
+            try:
+                parsed_detection_ids = json.loads(detection_ids)
+            except json.JSONDecodeError:
+                parsed_detection_ids = [
+                    item.strip() for item in detection_ids.split(",") if item.strip()
+                ]
         raw = {
             "image_path": image_path,
             "prompt": prompt,
@@ -112,6 +127,7 @@ async def execute_tool(
             "iou_threshold": iou_threshold,
             "classes": parsed_classes,
             "boxes": parsed_boxes,
+            "detection_ids": parsed_detection_ids,
         }
         try:
             tool = request.app.state.tool_registry.get(tool_name)

@@ -52,7 +52,7 @@ def main() -> None:
         sam_status = client.get(f"{base}/models/segmentation/status"); sam_status.raise_for_status()
 
     tool_names = [item["name"] for item in tools.json()]
-    assert health.json()["version"] == "0.6.0"
+    assert health.json()["version"] == settings.app_version
     assert {"detect_open_vocab", "segment_objects"}.issubset(tool_names)
     assert detected_body["success"] and detected_body["data"]["detection_count"] >= 1
     assert segmented.json()["success"] and segmented.json()["data"]["segment_count"] == len(boxes)
@@ -66,11 +66,11 @@ def main() -> None:
     assert sequence == ["inspect_image", "crop_image", "detect_open_vocab", "segment_objects"]
     detect_step = next(step for step in agent_body["steps"] if step["tool_name"] == "detect_open_vocab")
     segment_step = next(step for step in agent_body["steps"] if step["tool_name"] == "segment_objects")
-    assert detect_step["arguments_summary"]["image_path"] == "crop.png"
-    assert segment_step["arguments_summary"]["image_path"] == "crop.png"
-    assert segment_step["arguments_summary"]["boxes"] == [
-        item["bbox"] for item in detect_step["observation_summary"]["detections"]
-    ]
+    assert detect_step["arguments_summary"]["image_path"] == "crop-001"
+    assert segment_step["arguments_summary"]["image_path"] == "crop-001"
+    assert segment_step["arguments_summary"]["detection_ids"] == (
+        detect_step["observation_summary"]["workflow_detection_ids"]
+    )
     assert open_status.json()["state"] == sam_status.json()["state"] == "READY"
     assert open_status.json()["load_count"] == sam_status.json()["load_count"] == 1
 

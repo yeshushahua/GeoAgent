@@ -10,6 +10,11 @@ from backend.app.agent.schemas import (
     AgentToolDefinition,
 )
 from backend.app.schemas.tool_result import Artifact
+from backend.app.agent.workflow import (
+    WorkflowArtifact,
+    WorkflowDetection,
+    WorkflowSegmentation,
+)
 
 
 class AgentState(BaseModel):
@@ -25,6 +30,16 @@ class AgentState(BaseModel):
     tool_calls: list[AgentToolCall] = Field(default_factory=list)
     steps: list[AgentStep] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
+    workflow_artifacts: list[WorkflowArtifact] = Field(default_factory=list)
+    detections: list[WorkflowDetection] = Field(default_factory=list)
+    segmentations: list[WorkflowSegmentation] = Field(default_factory=list)
+    original_artifact_id: str = ""
+    active_image_artifact_id: str = ""
+    requested_categories: list[str] = Field(default_factory=list)
+    completed_actions: list[str] = Field(default_factory=list)
+    failed_actions: list[str] = Field(default_factory=list)
+    pending_goals: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     call_signatures: set[str] = Field(default_factory=set)
     final_answer: str | None = None
     started_at: str

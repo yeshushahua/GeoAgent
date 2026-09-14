@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 
 from backend.app.schemas.tool_result import Artifact, ToolResult
+from backend.app.agent.aggregation import WorkflowSummary
 
 
 class AgentToolDefinition(BaseModel):
@@ -54,6 +55,7 @@ class AgentStep(BaseModel):
     model_inference_duration_ms: float = Field(default=0, ge=0)
     tool_overhead_ms: float = Field(default=0, ge=0)
     artifacts: list[Artifact] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
     error_type: str | None = None
     state_transition: str
 
@@ -99,6 +101,9 @@ class AgentMetadata(BaseModel):
     tool_overhead_ms: float = Field(default=0, ge=0)
     allocated_vram_gib: float = Field(ge=0)
     peak_vram_gib: float = Field(ge=0)
+    successful_steps: int = Field(default=0, ge=0)
+    failed_steps: int = Field(default=0, ge=0)
+    workflow_total_ms: float = Field(default=0, ge=0)
 
 
 class AgentResponse(BaseModel):
@@ -109,6 +114,7 @@ class AgentResponse(BaseModel):
     status: Literal["COMPLETED", "FAILED"]
     steps: list[AgentStep] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
+    workflow: WorkflowSummary
     metadata: AgentMetadata
     error: AgentErrorDetail | None = None
 

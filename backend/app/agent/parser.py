@@ -49,7 +49,7 @@ class AgentOutputParser:
             try:
                 normalized = registry.get(decision.tool_name).input_schema.model_validate(
                     decision.arguments
-                ).model_dump(mode="json")
+                ).model_dump(mode="json", exclude_none=True)
             except ValidationError as exc:
                 raise AgentValidationError(
                     f"Arguments are invalid for tool {decision.tool_name}"

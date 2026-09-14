@@ -16,7 +16,7 @@ logger = logging.getLogger("geoagent")
 PLACEHOLDER = "GeoAgent 已就绪。"
 MANUAL_PARAMETER_ORDER = (
     "prompt", "max_new_tokens", "classes", "confidence", "iou_threshold",
-    "x1", "y1", "x2", "y2", "boxes",
+    "x1", "y1", "x2", "y2", "boxes", "detection_ids",
 )
 
 
@@ -215,7 +215,13 @@ def _post_agent(settings: Settings, image, message: str, max_new_tokens: int) ->
 def _agent_markdown(result: dict) -> str:
     if not result:
         return "### Agent 执行过程\n尚未执行。"
-    lines = ["### Agent 执行过程", f"Run ID：`{result.get('run_id', '-')}`", ""]
+    workflow = result.get("workflow", {})
+    lines = [
+        "### Workflow",
+        f"Run ID：`{result.get('run_id', '-')}`",
+        f"当前图像：`{workflow.get('active_image_artifact_id', '-')}`",
+        "",
+    ]
     for step in result.get("steps", []):
         if step.get("decision_type") == "final":
             lines.append(f"{step['index']}. **生成最终回答** · {step.get('duration_ms', 0):.2f} ms")
@@ -238,6 +244,12 @@ def _agent_markdown(result: dict) -> str:
         arguments = step.get("arguments_summary", {})
         if arguments:
             lines.append(f"   参数：`{json.dumps(arguments, ensure_ascii=False)}`")
+        source_id = step.get("observation_summary", {}).get("source_artifact_id")
+        produced_ids = step.get("artifact_ids", [])
+        if source_id:
+            lines.append(f"   来源：`{source_id}`")
+        if produced_ids:
+            lines.append("   产物：" + "、".join(f"`{item}`" for item in produced_ids))
         if tool == "detect_objects" and step.get("success"):
             observation = step.get("observation_summary", {})
             counts = observation.get("class_counts", {})
@@ -252,11 +264,37 @@ def _agent_markdown(result: dict) -> str:
             lines.append(
                 f"   开放检测总数：**{observation.get('detection_count', 0)}** · {summary}"
             )
+            detection_ids = observation.get("workflow_detection_ids", [])
+            if detection_ids:
+                lines.append("   Detection IDs：" + "、".join(f"`{item}`" for item in detection_ids))
         if tool == "segment_objects" and step.get("success"):
             observation = step.get("observation_summary", {})
             ratios = [item.get("mask_area_ratio", 0) for item in observation.get("segments", [])]
             summary = "、".join(f"{value:.2%}" for value in ratios) or "无实例"
-            lines.append(f"   分割实例：**{observation.get('segment_count', 0)}** · 面积比例：{summary}")
+            failed = len(observation.get("failures", []))
+            failure_text = f" · 失败：**{failed}**" if failed else ""
+            lines.append(
+                f"   分割实例：**{observation.get('segment_count', 0)}**"
+                f"{failure_text} · 面积比例：{summary}"
+            )
+    categories = workflow.get("categories", {})
+    if categories:
+        lines.extend(["", "**聚合结果**"])
+        for name, item in categories.items():
+            lines.append(
+                f"- {name}：检测 {item.get('detected', 0)} · "
+                f"分割 {item.get('segmented', 0)} · "
+                f"联合面积占比 {item.get('union_mask_area_ratio', 0):.2%}"
+            )
+    artifacts = workflow.get("artifacts", [])
+    if artifacts:
+        lines.extend(["", "**Artifact 依赖**"])
+        for artifact in artifacts:
+            parent = artifact.get("parent_artifact_id") or "-"
+            lines.append(
+                f"- `{artifact.get('artifact_id')}` · {artifact.get('artifact_type')} · "
+                f"parent `{parent}`"
+            )
     metadata = result.get("metadata", {})
     lines.extend([
         "",
@@ -275,13 +313,16 @@ def _agent_markdown(result: dict) -> str:
 
 
 def _ui_safe_result(value):
-    """Keep debug JSON readable without Gradio treating nested Artifact paths as files."""
+    """Keep debug JSON readable without exposing machine-local absolute paths."""
     if isinstance(value, list):
         return [_ui_safe_result(item) for item in value]
     if isinstance(value, dict):
         converted = {key: _ui_safe_result(item) for key, item in value.items()}
         if "path" in converted and "mime_type" in converted:
-            converted["artifact_path"] = converted.pop("path")
+            converted["artifact_path"] = os.path.basename(converted.pop("path"))
+        for key in ("source_image_path", "mask_artifact_path", "overlay_artifact_path"):
+            if isinstance(converted.get(key), str):
+                converted[key] = os.path.basename(converted[key])
         return converted
     return value
 
@@ -329,7 +370,7 @@ def analyze(settings: Settings, image, prompt: str, max_new_tokens: int):
 
 def execute_selected_tool(
     settings, tool_name, image, prompt, tokens, classes, confidence, iou_threshold,
-    x1, y1, x2, y2, boxes,
+    x1, y1, x2, y2, boxes, detection_ids,
 ):
     if image is None:
         return "请先上传图像。", {}, None, "### 工具调用\n尚未执行。", []
@@ -339,6 +380,7 @@ def execute_selected_tool(
             "prompt": prompt, "max_new_tokens": int(tokens), "classes": classes,
             "confidence": confidence, "iou_threshold": iou_threshold,
             "x1": x1, "y1": y1, "x2": x2, "y2": y2, "boxes": boxes,
+            "detection_ids": detection_ids,
         })
         result = _post_tool(settings, tool_name, image, fields)
         preview = image
@@ -404,7 +446,7 @@ def build_ui(settings: Settings | None = None):
         yield from analyze(settings, image, prompt, tokens)
 
     with gr.Blocks(title="GeoAgent", analytics_enabled=False) as demo:
-        gr.Markdown("# GeoAgent\n多模态视觉智能体 · **Phase 5 · Open Vocabulary + Segmentation**")
+        gr.Markdown("# GeoAgent\n多模态视觉智能体 · **Phase 6 · Multi-step Workflow**")
         status = gr.Markdown("### 正在连接后端…")
         with gr.Row():
             load = gr.Button("加载模型", variant="primary")
@@ -460,6 +502,10 @@ def build_ui(settings: Settings | None = None):
                 label="boxes", value='[{"x1": 0, "y1": 0, "x2": 256, "y2": 256}]',
                 lines=3, visible=False,
             )
+            manual_detection_ids = gr.Textbox(
+                label="detection_ids（仅 Agent Workflow）",
+                placeholder="det-001, det-002", visible=False,
+            )
             run_tool = gr.Button("执行 Tool")
         with gr.Accordion("高级 / 调试信息", open=False):
             details = gr.JSON(label="系统 / 模型信息")
@@ -486,16 +532,16 @@ def build_ui(settings: Settings | None = None):
             manual_updates,
             tool_choice,
             [manual_help, manual_prompt, manual_tokens, manual_classes, confidence,
-             iou_threshold, x1, y1, x2, y2, manual_boxes],
+             iou_threshold, x1, y1, x2, y2, manual_boxes, manual_detection_ids],
             api_name="manual_tool_schema",
         )
         run_tool.click(
-            lambda tool, image, tool_prompt, tokens, classes, conf, iou, left, top, right, bottom, boxes: execute_selected_tool(
+            lambda tool, image, tool_prompt, tokens, classes, conf, iou, left, top, right, bottom, boxes, detection_ids: execute_selected_tool(
                 settings, tool, image, tool_prompt, tokens, classes, conf, iou,
-                left, top, right, bottom, boxes
+                left, top, right, bottom, boxes, detection_ids
             ),
             [tool_choice, input_image, manual_prompt, manual_tokens, manual_classes,
-             confidence, iou_threshold, x1, y1, x2, y2, manual_boxes],
+             confidence, iou_threshold, x1, y1, x2, y2, manual_boxes, manual_detection_ids],
             [response, inference_details, result_image, tool_execution, mask_gallery],
             api_name="execute_tool",
         )
@@ -503,7 +549,7 @@ def build_ui(settings: Settings | None = None):
         demo.load(
             lambda: manual_updates("inspect_image"),
             outputs=[manual_help, manual_prompt, manual_tokens, manual_classes, confidence,
-                     iou_threshold, x1, y1, x2, y2, manual_boxes],
+                     iou_threshold, x1, y1, x2, y2, manual_boxes, manual_detection_ids],
         )
     return demo
 

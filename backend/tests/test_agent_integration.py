@@ -56,7 +56,7 @@ def test_real_qwen_vision_agent_scenarios_and_repeated_vram():
         assert sequence_c == ["inspect_image", "crop_image"], scenario_c
         crop_step_c = next(step for step in scenario_c["steps"] if step["tool_name"] == "crop_image")
         assert crop_step_c["arguments_summary"] == {
-            "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+            "image_path": "original-image-001", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
         }, scenario_c
         crop_path_c = Path(scenario_c["artifacts"][0]["path"])
         with Image.open(crop_path_c) as crop_c:
@@ -72,12 +72,12 @@ def test_real_qwen_vision_agent_scenarios_and_repeated_vram():
         assert crop_path.is_file() and crop_path.name == "crop.png"
         crop_step_d = next(step for step in scenario_d["steps"] if step["tool_name"] == "crop_image")
         assert crop_step_d["arguments_summary"] == {
-            "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+            "image_path": "original-image-001", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
         }, scenario_d
         with Image.open(crop_path) as crop_d:
             assert crop_d.size == (240, 150)
         analyze_step = next(step for step in scenario_d["steps"] if step["tool_name"] == "analyze_image")
-        assert analyze_step["arguments_summary"]["image_path"] == "crop.png"
+        assert analyze_step["arguments_summary"]["image_path"] == "crop-001"
         assert _has_chinese(scenario_d["answer"])
         report["scenarios"]["D"] = scenario_d
 

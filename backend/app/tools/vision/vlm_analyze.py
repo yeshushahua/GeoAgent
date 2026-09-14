@@ -13,7 +13,7 @@ from backend.app.tools.image_io import open_supported_image
 
 class AnalyzeImageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image_path: Path = Field(description="Reference to a PNG, JPEG, or WEBP image.")
+    image_path: Path = Field(description="Workflow artifact ID (preferred) or a PNG, JPEG, or WEBP image reference.")
     prompt: str = Field(min_length=1, max_length=8000, description="Question about the image.")
     max_new_tokens: int = Field(default=256, ge=64, le=512)
 

@@ -211,7 +211,9 @@ def test_real_qwen_agent_phase5_scenarios(message, expected_tools):
             ),
         )
         assert response.success, response.model_dump(mode="json")
-        sequence = [step.tool_name for step in response.steps if step.tool_name]
+        sequence = [
+            step.tool_name for step in response.steps if step.tool_name and step.success
+        ]
         assert sequence == expected_tools
         if "segment_objects" in sequence:
             detect_step = next(
@@ -220,12 +222,13 @@ def test_real_qwen_agent_phase5_scenarios(message, expected_tools):
             segment_step = next(
                 step for step in response.steps if step.tool_name == "segment_objects"
             )
-            boxes = [item["bbox"] for item in detect_step.observation_summary["detections"]]
-            assert segment_step.arguments_summary["boxes"] == boxes
-            assert segment_step.observation_summary["segment_count"] == len(boxes)
+            detection_ids = detect_step.observation_summary["workflow_detection_ids"]
+            assert segment_step.arguments_summary["detection_ids"] == detection_ids
+            assert "boxes" not in segment_step.arguments_summary
+            assert segment_step.observation_summary["segment_count"] == len(detection_ids)
             if "crop_image" in sequence:
-                assert detect_step.arguments_summary["image_path"] == "crop.png"
-                assert segment_step.arguments_summary["image_path"] == "crop.png"
+                assert detect_step.arguments_summary["image_path"] == "crop-001"
+                assert segment_step.arguments_summary["image_path"] == "crop-001"
         if response.steps[0].tool_name == "detect_open_vocab" and "紫色潜水艇" in message:
             assert response.steps[0].observation_summary["detection_count"] == 0
         target = settings.output_dir / "benchmarks" / "phase5" / "agent_scenarios.jsonl"

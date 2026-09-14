@@ -12,3 +12,11 @@ class InvalidCropError(ToolExecutionError):
 
 class InvalidToolImageError(ToolExecutionError):
     code = "INVALID_IMAGE"
+
+
+class InvalidBBoxError(ToolExecutionError):
+    code = "INVALID_BBOX"
+
+
+class NoValidBoxesError(ToolExecutionError):
+    code = "NO_VALID_BOXES"

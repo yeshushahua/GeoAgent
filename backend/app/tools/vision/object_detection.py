@@ -17,7 +17,7 @@ from backend.app.tools.image_io import open_supported_image
 
 class DetectObjectsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image_path: Path = Field(description="Reference to a PNG, JPEG, or WEBP image.")
+    image_path: Path = Field(description="Workflow artifact ID (preferred) or a PNG, JPEG, or WEBP image reference.")
     confidence: float = Field(
         default=0.25,
         ge=0.01,

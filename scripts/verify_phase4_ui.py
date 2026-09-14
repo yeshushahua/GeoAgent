@@ -46,7 +46,7 @@ def main():
 
     summary, manual, manual_preview, manual_panel, manual_gallery = client.predict(
         "detect_objects", handle_file(str(source)), "", 64, "", 0.25, 0.45,
-        0, 0, 256, 256, "[]", api_name="/execute_tool"
+        0, 0, 256, 256, "[]", "", api_name="/execute_tool"
     )
     assert manual["success"] and manual["data"]["detection_count"] == 5
     assert "检测完成" in summary and "YOLO11s" in manual_panel

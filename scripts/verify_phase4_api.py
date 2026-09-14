@@ -46,7 +46,7 @@ def main():
     direct_body = direct.json()
     agent_body = agent.json()
     sequence = [step["tool_name"] for step in agent_body["steps"] if step["tool_name"]]
-    assert health.json()["version"] == "0.5.0"
+    assert health.json()["version"] == settings.app_version
     assert "detect_objects" in [item["name"] for item in tools.json()]
     assert direct_body["success"] and direct_body["data"]["detection_count"] == 5
     assert direct_body["data"]["class_counts"] == {"bus": 1, "person": 4}
@@ -62,7 +62,7 @@ def main():
     )
     assert crop_step["arguments_summary"]["x2"] == 405
     assert crop_step["arguments_summary"]["y2"] == 540
-    assert detect_step["arguments_summary"]["image_path"] == "crop.png"
+    assert detect_step["arguments_summary"]["image_path"] == "crop-001"
     assert detect_step["observation_summary"]["image_width"] == 405
     assert detect_step["observation_summary"]["image_height"] == 540
     crop_artifact = Path(crop_step["artifacts"][0]["path"])

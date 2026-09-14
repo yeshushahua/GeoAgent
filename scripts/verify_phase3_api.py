@@ -36,7 +36,7 @@ def main():
         status.raise_for_status()
     body = agent.json()
     sequence = [step["tool_name"] for step in body["steps"] if step["tool_name"]]
-    assert health.json()["version"] == "0.4.0"
+    assert health.json()["version"] == settings.app_version
     assert body["success"] and body["answer"]
     assert sequence == ["inspect_image", "crop_image", "analyze_image"]
     assert body["artifacts"]
@@ -49,7 +49,7 @@ def main():
     with Image.open(crop_path) as crop:
         assert crop.size == (240, 150)
     analyze_step = next(step for step in body["steps"] if step["tool_name"] == "analyze_image")
-    assert analyze_step["arguments_summary"]["image_path"] == "crop.png"
+    assert analyze_step["arguments_summary"]["image_path"] == "crop-001"
     assert executions.json() and executions.json()[0]["run_id"] == body["run_id"]
     assert tool_check.json()["success"]
     payload = {

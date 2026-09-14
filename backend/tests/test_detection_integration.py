@@ -123,12 +123,12 @@ def test_real_qwen_agent_detection_scenarios():
         ], scenario_c
         crop_step = next(step for step in scenario_c["steps"] if step["tool_name"] == "crop_image")
         assert crop_step["arguments_summary"] == {
-            "image_path": "original_image", "x1": 0, "y1": 0, "x2": 405, "y2": 540,
+            "image_path": "original-image-001", "x1": 0, "y1": 0, "x2": 405, "y2": 540,
         }, scenario_c
         detect_step = next(
             step for step in scenario_c["steps"] if step["tool_name"] == "detect_objects"
         )
-        assert detect_step["arguments_summary"]["image_path"] == "crop.png"
+        assert detect_step["arguments_summary"]["image_path"] == "crop-001"
         assert detect_step["observation_summary"]["image_width"] == 405
         assert detect_step["observation_summary"]["image_height"] == 540
         assert detect_step["observation_summary"]["detection_count"] > 0

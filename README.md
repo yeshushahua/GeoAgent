@@ -3,7 +3,7 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 5 — Open-Vocabulary Detection + Segmentation.
+Current milestone: Phase 6 — Multi-step Workflow.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
 The user uploads one ordinary RGB image and gives a natural-language task. A local
@@ -12,6 +12,9 @@ ToolResult, optionally continues with another tool, and returns a structured fin
 response. YOLO11s supplies closed-set COCO detection, YOLOE-26s-seg locates arbitrary
 text-prompt categories, and SAM 2.1 Base turns detector boxes into instance masks,
 pixel areas, area ratios, and overlays. The default Chinese UI calls the Agent API.
+Phase 6 adds explicit workflow state, stable artifact and detection IDs, dependency
+validation, partial failure recovery, and deterministic result aggregation for
+multi-step and multi-class tasks.
 
 This is a small Tool-enabled Vision Agent with autonomous tool selection. It uses
 an explicit bounded loop rather than LangGraph or another agent framework. Tracking,
@@ -20,10 +23,11 @@ GeoTIFF/GIS processing, RAG, memory and fine-tuning are not implemented.
 ## Architecture
 
     Gradio -> Agent API -> VisionAgent -> Qwen decision (JSON)
+                                      -> WorkflowController
                                       -> ToolRegistry -> ToolExecutor -> Tool
                                              ^                         |
                                              `---- Observation --------'
-                                      -> Final answer
+                                      -> ResultAggregator -> Final answer
 
     VisionAgent planner ----\
                              > shared ModelManager -> one Qwen3-VL instance
@@ -43,9 +47,11 @@ The application starts in UNLOADED state. Importing FastAPI does not load weight
 
 Tool definitions are generated dynamically from `ToolRegistry` and each tool's
 Pydantic schema. The Agent output protocol accepts only a validated `tool_call` or
-`final` JSON object. Calls always pass through ToolExecutor. The loop has a six-step
-default limit, one bounded JSON repair, duplicate-call blocking, structured tool
-error observations, and no stored or displayed chain-of-thought.
+`final` JSON object. Calls always pass through ToolExecutor. Workflow state tracks
+the original and active analysis image, artifact parents, structured detections,
+segmentation links, progress, failures, and warnings. The loop has a six-step
+default limit, one bounded JSON repair, artifact-aware duplicate-call blocking,
+structured dependency errors, and no stored or displayed chain-of-thought.
 
 ## Verified environment
 
@@ -211,12 +217,15 @@ and can release its weights independently from Qwen.
 
 `detect_open_vocab` accepts one or more English text labels and returns stable
 detection IDs, requested classes, counts, confidence, and original pixel `xyxy`
-boxes. `segment_objects` accepts explicit boxes in the same image coordinate space,
-writes one grayscale PNG per instance plus a combined overlay, and reports mask
-pixels and image-area ratio. Detector previews are display-only; the Agent propagates
-the actual image path and exact boxes. A zero detection result ends without loading
-SAM. The four model managers are lazy, reusable, independently unloadable, and fixed
-to `cuda:0` without CPU fallback.
+boxes. `segment_objects` accepts workflow detection IDs or explicit boxes in the
+same image coordinate space, writes one grayscale PNG per instance plus a combined
+overlay, and reports mask pixels and image-area ratio. Detector previews are
+display-only; the Agent propagates the source artifact and resolves each detection
+ID to its exact box. A zero result for one category does not block segmentation of
+other categories. Partial SAM failures preserve successful masks and the failed
+detection link. Category totals use mask unions to avoid overlap double counting.
+The four model managers are lazy, reusable, independently unloadable, and fixed to
+`cuda:0` without CPU fallback.
 
 The infer endpoint accepts multipart image, prompt and max_new_tokens. Supported
 formats are PNG, JPEG/JPG and WEBP. max_new_tokens is limited to 64–512.
@@ -260,6 +269,8 @@ With FastAPI and Gradio running:
     .\.venv\Scripts\python.exe -m scripts.verify_phase4_ui
     .\.venv\Scripts\python.exe -m scripts.verify_phase5_api
     .\.venv\Scripts\python.exe -m scripts.verify_phase5_ui
+    .\.venv\Scripts\python.exe -m scripts.verify_phase6_api
+    .\.venv\Scripts\python.exe -m scripts.verify_phase6_ui
 
 The integration suite includes real Qwen Agent decisions for a metadata-only task,
 a semantic-analysis task, and a multi-step inspect/crop/analyze task. It verifies
@@ -281,6 +292,12 @@ Phase 5 integration covers five real YOLOE-to-SAM executions, prompt reuse, crop
 coordinate propagation, zero-target short circuiting, four real Qwen Agent workflows,
 mask artifacts, all four models resident together, and socket-blocked offline loads.
 See `docs/phase5-validation.md` for measured results and live API/UI evidence.
+
+Phase 6 integration covers explicit inspect/crop/detect/segment dependencies,
+multi-class batching, stable detection-to-mask links, zero-result categories,
+invalid-artifact recovery, per-instance segmentation recovery, union-mask category
+areas, compact planner observations, and workflow metrics. See
+`docs/phase6-validation.md` for measured RTX 4090 and live API/UI evidence.
 
 ## Benchmark
 
@@ -306,4 +323,4 @@ weight formats, large TIFF files and logs are ignored. The small sample images a
 original project assets. Do not commit user images, credentials, model files,
 Hub cache, benchmark output or datasets.
 
-No commit or push is performed by the Phase 5 workflow.
+No commit or push is performed by the Phase 6 workflow.

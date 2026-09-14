@@ -115,4 +115,4 @@ def test_phase5_tool_api_rejects_bad_inputs(client):
         data={"boxes": "not-json"},
     )
     assert bad_boxes.status_code == 422
-    assert bad_boxes.json()["error"]["code"] == "INVALID_TOOL_INPUT"
+    assert bad_boxes.json()["error"]["code"] == "NO_VALID_BOXES"

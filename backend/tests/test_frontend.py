@@ -5,7 +5,8 @@ import httpx
 
 from frontend.app import (
     PLACEHOLDER, _agent_markdown, _post_agent, analyze, build_manual_form_fields,
-    chat, fetch_status, manual_parameter_visibility, manual_tool_definitions,
+    _ui_safe_result, chat, fetch_status, manual_parameter_visibility,
+    manual_tool_definitions,
 )
 
 
@@ -51,7 +52,8 @@ def test_agent_panel_shows_detection_and_segmentation_summary():
             "index": 3, "decision_type": "tool_call", "tool_name": "segment_objects",
             "success": True, "duration_ms": 30.0,
             "observation_summary": {
-                "segment_count": 1, "segments": [{"mask_area_ratio": 0.125}]
+                "segment_count": 1, "segments": [{"mask_area_ratio": 0.125}],
+                "failures": [{"code": "SEGMENTATION_INFERENCE_FAILED"}],
             },
         }],
         "metadata": {},
@@ -59,7 +61,25 @@ def test_agent_panel_shows_detection_and_segmentation_summary():
     assert "检测总数：**5**" in panel
     assert "bus × 1" in panel and "person × 4" in panel
     assert "开放检测总数：**1**" in panel and "yellow safety helmet × 1" in panel
-    assert "分割实例：**1**" in panel and "12.50%" in panel
+    assert "分割实例：**1**" in panel and "失败：**1**" in panel and "12.50%" in panel
+
+
+def test_ui_result_redacts_machine_local_paths():
+    safe = _ui_safe_result({
+        "artifacts": [{
+            "path": "E:/sht/DEMO/GeoAgent/outputs/run/mask.png",
+            "mime_type": "image/png",
+        }],
+        "data": {
+            "source_image_path": "D:/sht/DEMO/GeoAgent/test/img/1.jpg",
+            "mask_artifact_path": "E:/sht/DEMO/GeoAgent/outputs/run/mask.png",
+        },
+    })
+    assert safe["artifacts"][0]["artifact_path"] == "mask.png"
+    assert safe["data"] == {
+        "source_image_path": "1.jpg", "mask_artifact_path": "mask.png"
+    }
+    assert "D:/" not in json.dumps(safe) and "E:/" not in json.dumps(safe)
 
 
 def test_manual_tool_fields_are_driven_by_registry_schema():
@@ -74,7 +94,7 @@ def test_manual_tool_fields_are_driven_by_registry_schema():
         "analyze_image": {"prompt", "max_new_tokens"},
         "detect_objects": {"classes", "confidence", "iou_threshold"},
         "detect_open_vocab": {"classes", "confidence", "iou_threshold"},
-        "segment_objects": {"boxes"},
+        "segment_objects": {"boxes", "detection_ids"},
     }
     for name, fields in expected.items():
         visible = manual_parameter_visibility(definitions[name])

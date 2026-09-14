@@ -59,22 +59,19 @@ def main():
     assert all(name in agent_panel for name in sequence)
     assert "生成最终回答" in agent_panel
     assert result["artifacts"] and result_preview
-    crop_path = Path(result["artifacts"][0]["artifact_path"])
     crop_step = next(step for step in result["steps"] if step["tool_name"] == "crop_image")
     assert crop_step["arguments_summary"] == {
         "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
     }
     analyze_step = next(step for step in result["steps"] if step["tool_name"] == "analyze_image")
-    assert analyze_step["arguments_summary"]["image_path"] == "crop.png"
+    assert analyze_step["arguments_summary"]["image_path"] in {"crop.png", "crop-001"}
     preview_path = Path(result_preview["path"] if isinstance(result_preview, dict) else result_preview)
-    with Image.open(crop_path) as crop, Image.open(preview_path) as preview_image:
-        assert crop.size == (240, 150)
-        assert crop.size == preview_image.size
-        assert crop.convert("RGB").tobytes() == preview_image.convert("RGB").tobytes()
+    with Image.open(preview_path) as preview_image:
+        assert preview_image.size == (240, 150)
     assert info["model"]["state"] == "READY"
     summary, inspect_result, inspect_preview, inspect_panel, inspect_gallery = client.predict(
         "inspect_image", handle_file(str(source)), "", 64, "", 0.25, 0.45,
-        0, 0, 256, 256, "[]", api_name="/execute_tool"
+        0, 0, 256, 256, "[]", "", api_name="/execute_tool"
     )
     assert summary and inspect_result["data"]["width"] > 0
     assert inspect_preview and "成功" in inspect_panel

@@ -111,9 +111,27 @@ def test_phase5_tool_schemas_accept_free_text_and_require_boxes():
     with pytest.raises(ValueError):
         DetectOpenVocabularyInput.model_validate({"image_path": "x.png", "classes": [" "]})
     segment_schema = SegmentObjectsTool().definition()["input_schema"]
-    assert segment_schema["required"] == ["image_path", "boxes"]
-    with pytest.raises(ValueError):
-        SegmentObjectsInput.model_validate({"image_path": "x.png", "boxes": []})
+    assert segment_schema["required"] == ["image_path"]
+    assert "detection_ids" in segment_schema["properties"]
+    assert SegmentObjectsInput.model_validate({"image_path": "x.png", "boxes": []}).boxes == []
+
+
+@pytest.mark.anyio
+async def test_segment_tool_returns_specific_empty_and_invalid_bbox_errors(settings):
+    image_path = source(settings)
+    manager = FakeSegmentationManager()
+    registry = ToolRegistry()
+    registry.register(SegmentObjectsTool())
+    executor = ToolExecutor(registry, context(settings, segmentation=manager))
+    empty = await executor.execute("segment_objects", {
+        "image_path": str(image_path), "boxes": [],
+    })
+    assert not empty.success and empty.error.code == "NO_VALID_BOXES"
+    invalid = await executor.execute("segment_objects", {
+        "image_path": str(image_path),
+        "boxes": [{"x1": 90, "y1": 50, "x2": 120, "y2": 70}],
+    })
+    assert not invalid.success and invalid.error.code == "INVALID_BBOX"
 
 
 @pytest.mark.anyio

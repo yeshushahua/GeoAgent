@@ -160,11 +160,11 @@ async def test_multistep_artifact_propagation(settings):
         assert crop.size == (240, 150)
     crop_arguments = response.steps[1].arguments_summary
     assert crop_arguments == {
-        "image_path": "original_image", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
+        "image_path": "original-image-001", "x1": 0, "y1": 0, "x2": 240, "y2": 150,
     }
     assert (crop_arguments["x2"], crop_arguments["y2"]) != (120, 75)
     assert planner.calls[2]["observations"] == 2
-    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
+    assert response.steps[2].arguments_summary["image_path"] == "crop-001"
 
 
 def test_spatial_quadrant_policy_and_integer_rule_are_explicit(settings):
@@ -173,7 +173,7 @@ def test_spatial_quadrant_policy_and_integer_rule_are_explicit(settings):
         "x2=floor(width / 2)",
         "y2=floor(height / 2)",
         "NEVER use width / 4",
-        "x2=240, y2=150",
+        "never copy dimensions from examples",
     )
     assert all(fragment in AGENT_SYSTEM_PROMPT for fragment in required)
 
@@ -270,7 +270,7 @@ async def test_crop_artifact_is_passed_to_detect_objects(settings):
     ]
     crop_artifact = response.steps[1].artifacts[0].path
     assert detector.calls[0][0] == Path(crop_artifact)
-    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
+    assert response.steps[2].arguments_summary["image_path"] == "crop-001"
     assert Path(response.artifacts[-1].path).name == "annotated.jpg"
 
 
@@ -367,7 +367,7 @@ async def test_agent_and_manual_open_vocab_use_identical_effective_arguments(set
     })
     assert open_vocab.calls[0] == open_vocab.calls[1]
     assert response.steps[0].arguments_summary == {
-        "image_path": "original_image", "classes": ["yellow helmet"],
+        "image_path": "original-image-001", "classes": ["yellow helmet"],
         "confidence": 0.25, "iou_threshold": 0.45,
     }
     assert response.steps[0].observation_summary["detections"] == manual.data["detections"]
@@ -422,8 +422,8 @@ async def test_crop_propagates_to_open_vocab_and_sam(settings):
     crop_path = Path(response.steps[1].artifacts[0].path)
     assert open_vocab.calls[0][0] == crop_path
     assert segmentation.calls[0][0] == crop_path
-    assert response.steps[2].arguments_summary["image_path"] == "crop.png"
-    assert response.steps[3].arguments_summary["image_path"] == "crop.png"
+    assert response.steps[2].arguments_summary["image_path"] == "crop-001"
+    assert response.steps[3].arguments_summary["image_path"] == "crop-001"
 
 
 @pytest.mark.anyio
@@ -499,6 +499,7 @@ async def test_max_steps_and_tool_error_are_safe(settings):
     assert not stopped.success and stopped.error.type == "MAX_STEPS_EXCEEDED"
 
     failed_crop = ScriptedPlanner([
+        tool_call("inspect_image", {"image_path": str(path)}),
         tool_call("crop_image", {
             "image_path": str(path), "x1": 0, "y1": 0, "x2": 999, "y2": 999,
         }),
@@ -507,6 +508,26 @@ async def test_max_steps_and_tool_error_are_safe(settings):
     agent, _, _ = make_agent(settings, failed_crop)
     handled = await agent.run(AgentRequest(message="错误裁剪", image_path=str(path)))
     assert handled.success
-    assert handled.steps[0].success is False
-    assert handled.steps[0].error_type == "INVALID_CROP"
-    assert failed_crop.calls[1]["observations"] == 1
+    assert handled.steps[0].success is True
+    assert handled.steps[1].success is False
+    assert handled.steps[1].error_type == "INVALID_CROP"
+    assert failed_crop.calls[2]["observations"] == 2
+
+
+@pytest.mark.anyio
+async def test_invalid_final_json_recovers_completed_analysis(settings):
+    path = source_image(settings)
+    planner = ScriptedPlanner([
+        tool_call("analyze_image", {
+            "image_path": str(path), "prompt": "describe", "max_new_tokens": 64,
+        }),
+        "not-json",
+        "still-not-json",
+    ])
+    agent, _, _ = make_agent(settings, planner)
+    response = await agent.run(AgentRequest(
+        message="分析图片", image_path=str(path), max_steps=3
+    ))
+    assert response.success and response.answer and "not-json" not in response.answer
+    assert response.steps[-1].decision_type == "final"
+    assert any("final JSON was invalid" in item for item in response.workflow.progress.warnings)

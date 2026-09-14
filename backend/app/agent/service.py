@@ -33,6 +33,8 @@ from backend.app.agent.schemas import (
 )
 from backend.app.agent.state import AgentState
 from backend.app.agent.trace import AgentTraceStore
+from backend.app.agent.aggregation import ResultAggregator
+from backend.app.agent.workflow import WorkflowController, WorkflowDependencyError
 from backend.app.models.errors import VlmError
 from backend.app.models.manager import ModelManager, ModelState
 from backend.app.models.qwen_vl import get_gpu_memory
@@ -96,6 +98,7 @@ class VisionAgent:
             try:
                 safe_path = self.executor.context.validate_read_path(Path(request.image_path))
                 state.original_image_path = str(safe_path)
+                WorkflowController.initialize(state, state.original_image_path)
             except (OSError, ValueError) as exc:
                 raise AgentValidationError("Image is missing or outside configured storage") from exc
             if self.model_manager.state == ModelState.ERROR:
@@ -113,7 +116,13 @@ class VisionAgent:
                 allocated = turn_allocated
                 peak = max(peak, turn_peak)
                 if isinstance(decision, AgentFinal):
+                    state.pending_goals = []
+                    aggregated_answer = ResultAggregator.render_chinese(
+                        ResultAggregator.aggregate(state)
+                    )
                     state.final_answer = decision.answer.strip()
+                    if aggregated_answer and aggregated_answer not in state.final_answer:
+                        state.final_answer += "\n\n" + aggregated_answer
                     state.steps.append(AgentStep(
                         index=index,
                         decision_type="final",
@@ -127,10 +136,15 @@ class VisionAgent:
                         agent_model_load_ms=agent_model_load_ms,
                     )
 
-                signature = json.dumps(
-                    {"tool_name": decision.tool_name, "arguments": decision.arguments},
-                    sort_keys=True,
-                    ensure_ascii=False,
+                prepared = None
+                source_artifact_id = None
+                dependency_error = None
+                try:
+                    prepared, source_artifact_id = WorkflowController.prepare_call(state, decision)
+                except WorkflowDependencyError as exc:
+                    dependency_error = exc
+                signature = WorkflowController.call_signature(
+                    decision, prepared, source_artifact_id
                 )
                 if signature in state.call_signatures:
                     duplicate = DuplicateToolCallError(
@@ -162,13 +176,25 @@ class VisionAgent:
                     ))
                     continue
 
-                state.call_signatures.add(signature)
+                # A dependency failure is state-dependent. The same logical call
+                # may become valid after inspect_image or another prerequisite,
+                # so only executed calls participate in duplicate blocking.
+                if dependency_error is None:
+                    state.call_signatures.add(signature)
                 state.tool_calls.append(decision)
                 self.logger.info(
                     "[%s] step=%d decision=tool_call tool=%s",
                     run_id, index, decision.tool_name,
                 )
-                result = await self.executor.execute(decision.tool_name, decision.arguments)
+                workflow_artifact_count = len(state.workflow_artifacts)
+                if dependency_error is not None:
+                    result = WorkflowController.dependency_failure(
+                        decision.tool_name, dependency_error
+                    )
+                else:
+                    result = await self.executor.execute(
+                        prepared.tool_name, prepared.arguments
+                    )
                 duration = float(result.metadata.get("duration_ms", 0))
                 tool_ms += duration
                 tool_peak = result.metadata.get("gpu_peak_gb")
@@ -183,6 +209,21 @@ class VisionAgent:
                 state.observations.append(AgentObservation(
                     step=index, tool_name=decision.tool_name, result=result
                 ))
+                WorkflowController.apply_result(
+                    state, decision, result, source_artifact_id, index
+                )
+                artifact_ids = [
+                    item.artifact_id
+                    for item in state.workflow_artifacts[workflow_artifact_count:]
+                ]
+                observation_summary = self._safe_observation(result)
+                if source_artifact_id:
+                    observation_summary["source_artifact_id"] = source_artifact_id
+                if decision.tool_name in {"detect_objects", "detect_open_vocab"}:
+                    observation_summary["workflow_detection_ids"] = [
+                        item.detection_id for item in state.detections
+                        if item.source_artifact_id == source_artifact_id
+                    ]
                 state.steps.append(AgentStep(
                     index=index,
                     decision_type="tool_call",
@@ -190,7 +231,7 @@ class VisionAgent:
                     arguments_summary=self._executed_arguments_summary(
                         state, decision, result
                     ),
-                    observation_summary=self._safe_observation(result),
+                    observation_summary=observation_summary,
                     success=result.success,
                     execution_id=str(result.metadata.get("execution_id", "")) or None,
                     duration_ms=round(decision_ms + duration, 2),
@@ -203,6 +244,7 @@ class VisionAgent:
                     model_inference_duration_ms=float(result.metadata.get("inference_ms", 0)),
                     tool_overhead_ms=float(result.metadata.get("tool_overhead_ms", 0)),
                     artifacts=result.artifacts,
+                    artifact_ids=artifact_ids,
                     error_type=result.error.type if result.error else None,
                     state_transition="DECIDING -> TOOL_EXECUTION -> OBSERVING -> DECIDING",
                 ))
@@ -242,6 +284,9 @@ class VisionAgent:
                 return self.parser.parse(turn.output, self.registry), planner_ms, allocated, peak
             except (AgentParseError, AgentValidationError, UnknownToolError) as exc:
                 if attempt >= self.repair_attempts:
+                    recovered = self._recover_final_from_last_analysis(state, exc)
+                    if recovered is not None:
+                        return recovered, planner_ms, allocated, peak
                     raise
                 repair_output = turn.output
                 repair_error = str(exc)
@@ -250,6 +295,23 @@ class VisionAgent:
                     state.run_id, state.step_count, exc.code,
                 )
         raise AgentParseError("Agent decision repair failed")
+
+    @staticmethod
+    def _recover_final_from_last_analysis(
+        state: AgentState, error: Exception
+    ) -> AgentFinal | None:
+        """Preserve a completed analysis when only the final JSON envelope failed."""
+        if not isinstance(error, AgentParseError) or not state.observations:
+            return None
+        latest = state.observations[-1]
+        answer = latest.result.data.get("answer") if latest.result.success else None
+        if latest.tool_name != "analyze_image" or not isinstance(answer, str) or not answer.strip():
+            return None
+        state.warnings.append(
+            "Planner final JSON was invalid after successful analyze_image; "
+            "used the grounded Tool answer"
+        )
+        return AgentFinal(type="final", answer=answer.strip())
 
     @staticmethod
     def _safe_arguments(state: AgentState, call: AgentToolCall) -> dict:
@@ -265,10 +327,10 @@ class VisionAgent:
                 if detection_observations:
                     summary["detection_observation_count"] = detection_observations
             elif key == "image_path" and isinstance(value, str):
-                resolved = str(Path(value))
-                summary[key] = (
-                    "original_image" if resolved == state.original_image_path else Path(value).name
-                )
+                try:
+                    summary[key] = WorkflowController.resolve_image(state, value).artifact_id
+                except WorkflowDependencyError:
+                    summary[key] = Path(value).name
             else:
                 summary[key] = value
         return summary
@@ -282,14 +344,18 @@ class VisionAgent:
         executed = result.metadata.get("arguments_summary", {})
         if isinstance(executed, dict):
             for key, value in executed.items():
-                if key not in {"image_path", "prompt_length"}:
+                if key not in {"image_path", "prompt_length", "detection_ids"}:
+                    if key == "boxes" and call.arguments.get("detection_ids"):
+                        continue
                     summary[key] = value
         return summary
 
     @staticmethod
     def _safe_observation(result: ToolResult) -> dict:
         if not result.success:
-            return {}
+            return {
+                "error": result.error.model_dump(mode="json") if result.error else None
+            }
         if result.tool == "analyze_image":
             answer = result.data.get("answer")
             return {"answer_length": len(answer)} if isinstance(answer, str) else {}
@@ -306,7 +372,7 @@ class VisionAgent:
             },
             "segment_objects": {
                 "image_width", "image_height", "segment_count", "segments",
-                "overlay_artifact_path",
+                "failures", "partial_failure", "overlay_artifact_path",
             },
         }.get(result.tool, set())
         summary = {key: value for key, value in result.data.items() if key in allowed}
@@ -342,6 +408,7 @@ class VisionAgent:
             peak = max(peak, memory.peak_allocated_gb)
         framework_stage_ms = max(0.0, state.duration_ms - planner_ms - tool_ms)
         tool_model_load_ms = sum(step.model_load_duration_ms for step in state.steps)
+        workflow = ResultAggregator.aggregate(state)
         metadata = AgentMetadata(
             model="Qwen3-VL-4B-Instruct",
             device=self.model_manager.settings.vlm_device,
@@ -366,6 +433,9 @@ class VisionAgent:
             tool_overhead_ms=round(sum(step.tool_overhead_ms for step in state.steps), 2),
             allocated_vram_gib=round(allocated, 3),
             peak_vram_gib=round(peak, 3),
+            successful_steps=workflow.successful_steps,
+            failed_steps=workflow.failed_steps,
+            workflow_total_ms=state.duration_ms,
         )
         response = AgentResponse(
             success=success,
@@ -374,6 +444,7 @@ class VisionAgent:
             status=state.status,
             steps=state.steps,
             artifacts=state.artifacts,
+            workflow=workflow,
             metadata=metadata,
             error=error,
         )

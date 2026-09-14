@@ -13,7 +13,7 @@ from backend.app.tools.image_io import open_supported_image
 
 class CropImageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image_path: Path = Field(description="Reference to a PNG, JPEG, or WEBP image.")
+    image_path: Path = Field(description="Workflow artifact ID (preferred) or a PNG, JPEG, or WEBP image reference.")
     x1: int = Field(ge=0, description="Left crop coordinate in pixels.")
     y1: int = Field(ge=0, description="Top crop coordinate in pixels.")
     x2: int = Field(gt=0, description="Exclusive right crop coordinate in pixels.")

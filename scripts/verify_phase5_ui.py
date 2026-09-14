@@ -48,7 +48,7 @@ def main() -> None:
 
     summary, manual, manual_preview, manual_panel, manual_gallery = client.predict(
         "detect_open_vocab", handle_file(str(source)), "", 128,
-        "yellow safety helmet", 0.25, 0.45, 0, 0, 320, 320, "[]",
+        "yellow safety helmet", 0.25, 0.45, 0, 0, 320, 320, "[]", "",
         api_name="/execute_tool"
     )
     assert manual["success"] and manual["data"]["detection_count"] >= 1
@@ -56,7 +56,7 @@ def main() -> None:
     box = manual["data"]["detections"][0]["bbox"]
     summary2, mask_result, mask_preview, mask_panel, mask_gallery = client.predict(
         "segment_objects", handle_file(str(source)), "", 128, "", 0.25, 0.45,
-        0, 0, 0, 0, json.dumps([box]), api_name="/execute_tool"
+        0, 0, 0, 0, json.dumps([box]), "", api_name="/execute_tool"
     )
     assert mask_result["success"] and mask_result["data"]["segment_count"] == 1
     assert mask_preview and mask_gallery and "SAM 2.1 Base" in mask_panel

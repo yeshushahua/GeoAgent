@@ -10,7 +10,7 @@ from backend.app.tools.image_io import open_supported_image
 
 class InspectImageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image_path: Path = Field(description="Reference to a PNG, JPEG, or WEBP image.")
+    image_path: Path = Field(description="Workflow artifact ID (preferred) or a PNG, JPEG, or WEBP image reference.")
 
 
 class InspectImageTool(BaseTool):
