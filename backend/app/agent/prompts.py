@@ -64,9 +64,35 @@ Remote sensing rules:
   region enum, such as region="top_left_quarter". Do not manually calculate row
   or column endpoints for a named region. For an arbitrary numeric window, provide
   all four explicit pixel coordinates derived from the current raster metadata.
-- Statistics use original values and exclude NoData, NaN, and Inf. Do not infer
-  physical area, reproject, transform coordinates, calculate indices, or perform
-  any vector/GIS operation.
+- Statistics use original values and exclude NoData, NaN, and Inf.
+Geospatial intelligence rules:
+- Spatial tools require grounded geometry and a real CRS. Never convert a segmentation
+  pixel ratio into square metres or hectares. Never use pixel_count multiplied by an
+  assumed fixed area.
+- get_raster_coordinate requires an inspected raster and a zero-based row/col. It
+  returns the pixel-center source coordinate and EPSG:4326 longitude/latitude.
+- For a user-requested raster region in pixel space, use active_raster and exact
+  coordinates derived from its own metadata. Call get_raster_coordinate before
+  calculate_area when the request explicitly asks for coordinate awareness or when
+  explaining the region's geographic position.
+- export_geojson converts exactly one bbox, polygon, or raster-aligned mask into a
+  vector artifact. Use coordinate_space=pixel for row/column-derived geometry,
+  projected for source-CRS geometry, and geographic for longitude/latitude geometry.
+  Its output becomes active_vector; subsequent spatial tools should refer to
+  vector_path=active_vector.
+- calculate_area computes real CRS-aware area from a vector or grounded raster
+  geometry. Prefer vector_path=active_vector after export_geojson. Its area_m2 and
+  area_ha observations are authoritative.
+- zonal_statistics requires active_raster plus a vector, bbox, or polygon zone and
+  returns count, mean, min, max, and std from original raster values. Use a requested
+  band when known; otherwise omit bands to process all bands. A request for mean NDVI
+  is supported only when the raster already contains an NDVI band; do not invent or
+  calculate NDVI from generic bands in Phase 8.
+- A raster preview is not a geospatial raster source. Never use its dimensions,
+  detections, or masks as source-raster coordinates unless an exact raster-aligned
+  relationship is already proven by artifact metadata.
+- Every GeoJSON, area, coordinate, and zonal-statistics result must remain represented
+  by its workflow vector or analysis-result artifact and provenance.
 
 Mandatory selection policy:
 - Every capability the user explicitly requests is a required workflow goal. Do not
@@ -190,6 +216,8 @@ def build_planner_prompt(
         "active_image_artifact_id": state.active_image_artifact_id,
         "original_raster_artifact_id": state.original_raster_artifact_id,
         "active_raster_artifact_id": state.active_raster_artifact_id,
+        "active_vector_artifact_id": state.active_vector_artifact_id,
+        "active_analysis_result_artifact_id": state.active_analysis_result_artifact_id,
         "max_new_tokens_for_analyze_image": state.max_new_tokens,
         "available_tools": definitions,
         "workflow_artifacts": [
@@ -201,6 +229,8 @@ def build_planner_prompt(
     }
     if aggregated.raster is not None:
         context["raster_result"] = aggregated.raster.model_dump(mode="json")
+    if aggregated.spatial_results:
+        context["spatial_results"] = aggregated.spatial_results
     # Before segmentation has actually run, fields such as ``segmented: 0`` can
     # look like pending work to a small local planner even for detection-only
     # requests. Detection observations already contain everything needed to

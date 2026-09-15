@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 ArtifactType = Literal[
     "original_image", "cropped_image", "detection_overlay",
     "segmentation_overlay", "mask", "image", "raster", "raster_crop",
-    "raster_preview",
+    "raster_preview", "vector", "analysis_result",
 ]
 
 
@@ -25,7 +25,7 @@ class WorkflowArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_id: str = Field(pattern=r"^[a-z][a-z-]*-[0-9]{3}$")
     artifact_type: ArtifactType
-    role: Literal["analysis_source", "raster_source", "visualization"]
+    role: Literal["analysis_source", "raster_source", "vector_source", "analysis_result", "visualization"]
     source_tool: str
     path: str
     parent_artifact_id: str | None = None
@@ -37,7 +37,7 @@ class WorkflowArtifactView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_id: str
     artifact_type: ArtifactType
-    role: Literal["analysis_source", "raster_source", "visualization"]
+    role: Literal["analysis_source", "raster_source", "vector_source", "analysis_result", "visualization"]
     source_tool: str
     basename: str
     parent_artifact_id: str | None = None
@@ -210,6 +210,41 @@ class WorkflowController:
         )
 
     @classmethod
+    def resolve_vector(cls, state, reference: str) -> WorkflowArtifact:
+        aliases = {
+            "active_vector": state.active_vector_artifact_id,
+            "active-vector": state.active_vector_artifact_id,
+        }
+        artifact_id = aliases.get(reference, reference)
+        artifact = cls.artifact(state, artifact_id)
+        if artifact is not None and artifact.role == "vector_source":
+            return artifact
+        by_path = cls.artifact_for_path(state, reference)
+        if by_path is not None and by_path.role == "vector_source":
+            return by_path
+        raise WorkflowDependencyError(
+            "ARTIFACT_NOT_FOUND",
+            f"Workflow vector artifact does not exist: {reference}",
+            {"requested": Path(reference).name, "available_artifact_ids": [
+                item.artifact_id for item in state.workflow_artifacts
+                if item.role == "vector_source"
+            ]},
+        )
+
+    @classmethod
+    def resolve_mask(cls, state, reference: str) -> WorkflowArtifact:
+        artifact = cls.artifact(state, reference)
+        if artifact is not None and artifact.artifact_type == "mask":
+            return artifact
+        by_path = cls.artifact_for_path(state, reference)
+        if by_path is not None and by_path.artifact_type == "mask":
+            return by_path
+        raise WorkflowDependencyError(
+            "ARTIFACT_NOT_FOUND",
+            f"Workflow mask artifact does not exist: {reference}",
+            {"requested": Path(reference).name},
+        )
+    @classmethod
     def prepare_call(cls, state, call: AgentToolCall) -> tuple[AgentToolCall, str | None]:
         arguments = dict(call.arguments)
         source_artifact_id = None
@@ -225,6 +260,14 @@ class WorkflowController:
                     "Inspect the raster before preview, crop, or statistics",
                     {"artifact_id": source.artifact_id, "required_tool": "inspect_raster"},
                 )
+        if "vector_path" in arguments and arguments["vector_path"] is not None:
+            source = cls.resolve_vector(state, str(arguments["vector_path"]))
+            source_artifact_id = source.artifact_id
+            arguments["vector_path"] = source.path
+        if "mask_path" in arguments and arguments["mask_path"] is not None:
+            source = cls.resolve_mask(state, str(arguments["mask_path"]))
+            source_artifact_id = source.artifact_id
+            arguments["mask_path"] = source.path
         if "image_path" in arguments and arguments["image_path"] is not None:
             source = cls.resolve_image(state, str(arguments["image_path"]))
             source_artifact_id = source.artifact_id
@@ -275,10 +318,9 @@ class WorkflowController:
     ) -> str:
         arguments = dict((prepared or original).arguments)
         if source_artifact_id:
-            if "raster_path" in arguments:
-                arguments["raster_path"] = source_artifact_id
-            elif "image_path" in arguments:
-                arguments["image_path"] = source_artifact_id
+            for key in ("raster_path", "vector_path", "mask_path", "image_path"):
+                if key in arguments:
+                    arguments[key] = source_artifact_id
         classes = arguments.get("classes")
         if isinstance(classes, list):
             arguments["classes"] = sorted(str(item).strip().casefold() for item in classes)
@@ -318,6 +360,8 @@ class WorkflowController:
             "image": sum(item.artifact_type == "image" for item in state.workflow_artifacts),
             "raster-crop": sum(item.artifact_type == "raster_crop" for item in state.workflow_artifacts),
             "raster-preview": sum(item.artifact_type == "raster_preview" for item in state.workflow_artifacts),
+            "vector": sum(item.artifact_type == "vector" for item in state.workflow_artifacts),
+            "analysis-result": sum(item.artifact_type == "analysis_result" for item in state.workflow_artifacts),
         }
         return f"{prefix}-{counters.get(prefix, 0) + 1:03d}"
 
@@ -334,6 +378,8 @@ class WorkflowController:
             "image": "image",
             "raster_crop": "raster-crop",
             "raster_preview": "raster-preview",
+            "vector": "vector",
+            "analysis_result": "analysis-result",
         }[artifact_type]
         record = WorkflowArtifact(
             artifact_id=cls._next_id(state, prefix),
@@ -379,6 +425,26 @@ class WorkflowController:
             state.active_raster_artifact_id = crop.artifact_id
         elif original_call.tool_name == "raster_statistics" and source_artifact_id:
             state.raster_statistics[source_artifact_id] = result.data
+        elif original_call.tool_name == "export_geojson" and result.artifacts:
+            vector = cls._register_artifact(
+                state, result.artifacts[0], "vector", "vector_source",
+                original_call.tool_name, source_artifact_id, step, result.data,
+            )
+            state.active_vector_artifact_id = vector.artifact_id
+        elif original_call.tool_name in {
+            "get_raster_coordinate", "calculate_area", "zonal_statistics"
+        } and result.artifacts:
+            analysis = cls._register_artifact(
+                state, result.artifacts[0], "analysis_result", "analysis_result",
+                original_call.tool_name, source_artifact_id, step, result.data,
+            )
+            state.active_analysis_result_artifact_id = analysis.artifact_id
+            state.spatial_results.append({
+                "tool": original_call.tool_name,
+                "artifact_id": analysis.artifact_id,
+                "source_artifact_id": source_artifact_id,
+                "data": result.data,
+            })
         elif original_call.tool_name == "inspect_image" and source_artifact_id:
             artifact = cls.artifact(state, source_artifact_id)
             if artifact:
@@ -559,6 +625,37 @@ class WorkflowController:
                     ),
                     "bands": result.data.get("bands", []),
                     "read_strategy": result.data.get("read_strategy"),
+                })
+            elif result.tool == "get_raster_coordinate":
+                item.update({
+                    "source_artifact_id": state.active_raster_artifact_id,
+                    "pixel": result.data.get("pixel"),
+                    "projected_coordinate": result.data.get("projected_coordinate"),
+                    "longitude": result.data.get("longitude"),
+                    "latitude": result.data.get("latitude"),
+                    "source_crs": result.data.get("source_crs"),
+                })
+            elif result.tool == "export_geojson":
+                item.update({
+                    "active_vector_artifact_id": state.active_vector_artifact_id,
+                    "geometry_type": result.data.get("geometry_type"),
+                    "feature_count": result.data.get("feature_count"),
+                    "crs": result.data.get("crs"),
+                })
+            elif result.tool == "calculate_area":
+                item.update({
+                    key: result.data.get(key) for key in (
+                        "area_m2", "area_ha", "area_km2", "source_crs",
+                        "area_crs", "calculation_method", "source_type",
+                    )
+                })
+            elif result.tool == "zonal_statistics":
+                item.update({
+                    "raster_crs": result.data.get("raster_crs"),
+                    "vector_crs": result.data.get("vector_crs"),
+                    "bands": result.data.get("bands", []),
+                    "read_strategy": result.data.get("read_strategy"),
+                    "has_overlap": result.data.get("has_overlap"),
                 })
             elif result.tool == "inspect_image":
                 item["image"] = {key: result.data.get(key) for key in ("width", "height", "format", "mode")}

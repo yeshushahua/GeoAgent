@@ -37,7 +37,10 @@ class AgentState(BaseModel):
     active_image_artifact_id: str = ""
     original_raster_artifact_id: str = ""
     active_raster_artifact_id: str = ""
+    active_vector_artifact_id: str = ""
+    active_analysis_result_artifact_id: str = ""
     raster_statistics: dict[str, dict] = Field(default_factory=dict)
+    spatial_results: list[dict] = Field(default_factory=list)
     requested_categories: list[str] = Field(default_factory=list)
     completed_actions: list[str] = Field(default_factory=list)
     failed_actions: list[str] = Field(default_factory=list)

@@ -23,8 +23,18 @@ MANUAL_PARAMETER_ORDER = (
 )
 
 
+MANUAL_TOOL_NAMES = {
+    "inspect_image", "crop_image", "analyze_image", "detect_objects",
+    "detect_open_vocab", "segment_objects", "inspect_raster", "raster_preview",
+    "crop_raster", "raster_statistics",
+}
+
+
 def manual_tool_definitions() -> dict[str, dict]:
-    return {item["name"]: item for item in build_tool_registry().list_tools()}
+    return {
+        item["name"]: item for item in build_tool_registry().list_tools()
+        if item["name"] in MANUAL_TOOL_NAMES
+    }
 
 
 def manual_parameter_visibility(definition: dict) -> dict[str, bool]:
@@ -631,7 +641,7 @@ def build_ui(settings: Settings | None = None):
         yield from analyze(settings, image, prompt, tokens, raster_path)
 
     with gr.Blocks(title="GeoAgent", analytics_enabled=False) as demo:
-        gr.Markdown("# GeoAgent\n多模态遥感智能体 · **Phase 7 · Remote Sensing Extension**")
+        gr.Markdown("# GeoAgent\n多模态遥感智能体 · **Phase 8 · Geospatial Intelligence**")
         status = gr.Markdown("### 正在连接后端…")
         with gr.Row():
             load = gr.Button("加载模型", variant="primary")

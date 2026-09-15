@@ -1,10 +1,14 @@
 """Future callable tools; depend on models/services and return ToolResult."""
 from backend.app.tools.context import ToolContext
 from backend.app.tools.executor import ToolExecutor
+from backend.app.tools.geo import (
+    CalculateAreaTool, ExportGeoJSONTool, GetRasterCoordinateTool,
+)
 from backend.app.tools.registry import ToolRegistry
 from backend.app.tools.raster import (
     CropRasterTool, InspectRasterTool, RasterPreviewTool, RasterStatisticsTool,
 )
+from backend.app.tools.spatial import ZonalStatisticsTool
 from backend.app.tools.trace import ToolTraceStore
 from backend.app.tools.utility import CropImageTool
 from backend.app.tools.vision import (
@@ -29,6 +33,10 @@ def build_tool_registry():
     registry.register(RasterPreviewTool())
     registry.register(CropRasterTool())
     registry.register(RasterStatisticsTool())
+    registry.register(GetRasterCoordinateTool())
+    registry.register(ExportGeoJSONTool())
+    registry.register(CalculateAreaTool())
+    registry.register(ZonalStatisticsTool())
     return registry
 
 

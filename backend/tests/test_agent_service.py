@@ -107,9 +107,11 @@ async def test_dynamic_discovery_single_tool_and_final(settings):
     assert [step.tool_name for step in response.steps if step.tool_name] == ["inspect_image"]
     assert manager.load_calls == 1
     assert planner.calls[0]["definitions"] == [
-        "analyze_image", "crop_image", "crop_raster", "detect_objects",
-        "detect_open_vocab", "inspect_image", "inspect_raster", "raster_preview",
-        "raster_statistics", "segment_objects",
+        "analyze_image", "calculate_area", "crop_image", "crop_raster",
+        "detect_objects", "detect_open_vocab", "export_geojson",
+        "get_raster_coordinate", "inspect_image", "inspect_raster",
+        "raster_preview", "raster_statistics", "segment_objects",
+        "zonal_statistics",
     ]
     trace = traces.list()[0].model_dump()
     assert trace["prompt_length"] == len("告诉我尺寸")

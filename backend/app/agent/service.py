@@ -326,13 +326,15 @@ class VisionAgent:
                 )
                 if detection_observations:
                     summary["detection_observation_count"] = detection_observations
-            elif key in {"image_path", "raster_path"} and isinstance(value, str):
+            elif key in {"image_path", "raster_path", "vector_path", "mask_path"} and isinstance(value, str):
                 try:
-                    resolver = (
-                        WorkflowController.resolve_raster
-                        if key == "raster_path" else WorkflowController.resolve_image
-                    )
-                    summary[key] = resolver(state, value).artifact_id
+                    resolvers = {
+                        "image_path": WorkflowController.resolve_image,
+                        "raster_path": WorkflowController.resolve_raster,
+                        "vector_path": WorkflowController.resolve_vector,
+                        "mask_path": WorkflowController.resolve_mask,
+                    }
+                    summary[key] = resolvers[key](state, value).artifact_id
                 except WorkflowDependencyError:
                     summary[key] = Path(value).name
             else:
@@ -348,7 +350,7 @@ class VisionAgent:
         executed = result.metadata.get("arguments_summary", {})
         if isinstance(executed, dict):
             for key, value in executed.items():
-                if key not in {"image_path", "raster_path", "prompt_length", "detection_ids"}:
+                if key not in {"image_path", "raster_path", "vector_path", "mask_path", "prompt_length", "detection_ids"}:
                     if key == "boxes" and call.arguments.get("detection_ids"):
                         continue
                     summary[key] = value
@@ -377,6 +379,21 @@ class VisionAgent:
             "crop_raster": {"window", "metadata", "read_strategy"},
             "raster_statistics": {
                 "width", "height", "bands", "read_strategy", "total_blocks_read",
+            },
+            "get_raster_coordinate": {
+                "pixel", "source_crs", "source_epsg", "projected_coordinate",
+                "longitude", "latitude", "geographic_crs",
+            },
+            "export_geojson": {
+                "geometry_type", "feature_count", "crs", "epsg", "properties", "provenance",
+            },
+            "calculate_area": {
+                "area_m2", "area_ha", "area_km2", "source_crs", "area_crs",
+                "calculation_method", "geometry_count", "source_type",
+            },
+            "zonal_statistics": {
+                "raster_crs", "vector_crs", "source_type", "bands", "all_touched",
+                "read_strategy", "total_blocks_read", "has_overlap",
             },
             "inspect_image": {"width", "height", "mode", "format", "file_size", "aspect_ratio"},
             "crop_image": {"width", "height"},

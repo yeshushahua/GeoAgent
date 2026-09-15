@@ -43,7 +43,10 @@ class WorkflowSummary(BaseModel):
     active_image_artifact_id: str
     original_raster_artifact_id: str = ""
     active_raster_artifact_id: str = ""
+    active_vector_artifact_id: str = ""
+    active_analysis_result_artifact_id: str = ""
     raster: RasterAggregate | None = None
+    spatial_results: list[dict] = Field(default_factory=list)
     artifacts: list[WorkflowArtifactView] = Field(default_factory=list)
     detections: list[WorkflowDetection] = Field(default_factory=list)
     segmentations: list[WorkflowSegmentation] = Field(default_factory=list)
@@ -101,7 +104,10 @@ class ResultAggregator:
             active_image_artifact_id=state.active_image_artifact_id,
             original_raster_artifact_id=state.original_raster_artifact_id,
             active_raster_artifact_id=state.active_raster_artifact_id,
+            active_vector_artifact_id=state.active_vector_artifact_id,
+            active_analysis_result_artifact_id=state.active_analysis_result_artifact_id,
             raster=raster,
+            spatial_results=state.spatial_results,
             artifacts=WorkflowController.public_artifacts(state),
             detections=state.detections,
             segmentations=state.segmentations,
@@ -142,7 +148,7 @@ class ResultAggregator:
 
     @staticmethod
     def render_chinese(summary: WorkflowSummary) -> str:
-        if not summary.categories and summary.raster is None:
+        if not summary.categories and summary.raster is None and not summary.spatial_results:
             return ""
         lines = []
         if summary.raster is not None:
@@ -170,6 +176,31 @@ class ResultAggregator:
                         f"std={item.get('std')}，有效像素={item.get('valid_pixel_count')}，"
                         f"NoData={item.get('nodata_count')}。"
                     )
+        if summary.spatial_results:
+            lines.append("空间分析结果：")
+            for result in summary.spatial_results:
+                data = result.get("data", {})
+                tool = result.get("tool")
+                if tool == "get_raster_coordinate":
+                    lines.append(
+                        f"- 像素 {data.get('pixel')}：经度 {data.get('longitude')}，"
+                        f"纬度 {data.get('latitude')}，源坐标 {data.get('projected_coordinate')}。"
+                    )
+                elif tool == "calculate_area":
+                    lines.append(
+                        f"- 真实面积：{data.get('area_m2')} m² "
+                        f"({data.get('area_ha')} ha)，方法 {data.get('calculation_method')}。"
+                    )
+                elif tool == "zonal_statistics":
+                    lines.append("- 区域统计：")
+                    for band in data.get("bands", []):
+                        lines.append(
+                            f"  Band {band.get('band')}：count={band.get('count')}，"
+                            f"min={band.get('min')}，max={band.get('max')}，"
+                            f"mean={band.get('mean')}，std={band.get('std')}。"
+                        )
+        if summary.active_vector_artifact_id:
+            lines.append(f"- 当前 Vector：{summary.active_vector_artifact_id}。")
         if summary.categories:
             lines.append("结构化工作流结果：")
         has_masks = False

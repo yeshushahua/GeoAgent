@@ -35,6 +35,13 @@ ERROR_STATUS = {
     "UNSUPPORTED_RASTER_DTYPE": 422,
     "PREVIEW_FAILED": 422,
     "RASTER_METADATA_REQUIRED": 422,
+    "CRS_REQUIRED": 422,
+    "INVALID_PIXEL": 422,
+    "INVALID_GEOMETRY": 422,
+    "INVALID_VECTOR": 415,
+    "CRS_TRANSFORM_FAILED": 422,
+    "AREA_CALCULATION_FAILED": 422,
+    "ZONAL_STATISTICS_FAILED": 422,
     "DETECTOR_CUDA_UNAVAILABLE": 503,
     "DETECTOR_FILES_MISSING": 503,
     "DETECTOR_BUSY": 409,
@@ -82,6 +89,8 @@ async def execute_tool(
     request: Request,
     tool_name: str,
     image: UploadFile | None = File(default=None),
+    vector: UploadFile | None = File(default=None),
+    mask: UploadFile | None = File(default=None),
     image_path: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
     max_new_tokens: str | None = Form(default=None),
@@ -95,6 +104,16 @@ async def execute_tool(
     boxes: str | None = Form(default=None),
     detection_ids: str | None = Form(default=None),
     raster_path: str | None = Form(default=None),
+    vector_path: str | None = Form(default=None),
+    mask_path: str | None = Form(default=None),
+    bbox: str | None = Form(default=None),
+    polygon: str | None = Form(default=None),
+    coordinate_space: str | None = Form(default=None),
+    crs: str | None = Form(default=None),
+    properties: str | None = Form(default=None),
+    row: str | None = Form(default=None),
+    col: str | None = Form(default=None),
+    all_touched: str | None = Form(default=None),
     bands: str | None = Form(default=None),
     stretch: str | None = Form(default=None),
     lower_percentile: str | None = Form(default=None),
@@ -107,12 +126,21 @@ async def execute_tool(
     col_start: str | None = Form(default=None),
     col_end: str | None = Form(default=None),
 ):
-    temporary: Path | None = None
+    temporaries: list[Path] = []
     try:
         if image is not None:
             temporary = await store_temporary_upload(request.app.state.settings, image)
+            temporaries.append(temporary)
             image_path = str(temporary)
             raster_path = str(temporary)
+        if vector is not None:
+            temporary = await store_temporary_upload(request.app.state.settings, vector)
+            temporaries.append(temporary)
+            vector_path = str(temporary)
+        if mask is not None:
+            temporary = await store_temporary_upload(request.app.state.settings, mask)
+            temporaries.append(temporary)
+            mask_path = str(temporary)
         parsed_classes = None
         if classes is not None:
             try:
@@ -142,8 +170,36 @@ async def execute_tool(
                 parsed_bands = json.loads(bands)
             except json.JSONDecodeError:
                 parsed_bands = [int(item.strip()) for item in bands.split(",") if item.strip()]
+        parsed_bbox = None
+        if bbox is not None:
+            try:
+                parsed_bbox = json.loads(bbox)
+            except json.JSONDecodeError:
+                parsed_bbox = [float(item.strip()) for item in bbox.split(",") if item.strip()]
+        parsed_polygon = None
+        if polygon is not None:
+            try:
+                parsed_polygon = json.loads(polygon)
+            except json.JSONDecodeError:
+                parsed_polygon = None
+        parsed_properties = None
+        if properties is not None:
+            try:
+                parsed_properties = json.loads(properties)
+            except json.JSONDecodeError:
+                parsed_properties = None
         raw = {
             "raster_path": raster_path,
+            "vector_path": vector_path,
+            "mask_path": mask_path,
+            "bbox": parsed_bbox,
+            "polygon": parsed_polygon,
+            "coordinate_space": coordinate_space,
+            "crs": crs,
+            "properties": parsed_properties,
+            "row": row,
+            "col": col,
+            "all_touched": all_touched,
             "bands": parsed_bands,
             "stretch": stretch,
             "lower_percentile": lower_percentile,
@@ -184,5 +240,5 @@ async def execute_tool(
             content=result.model_dump(mode="json", by_alias=True),
         )
     finally:
-        if temporary is not None:
+        for temporary in temporaries:
             temporary.unlink(missing_ok=True)

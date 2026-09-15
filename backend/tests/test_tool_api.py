@@ -29,9 +29,11 @@ def test_tool_discovery_api(client):
     response = client.get("/api/v1/tools")
     assert response.status_code == 200
     assert [item["name"] for item in response.json()] == [
-        "analyze_image", "crop_image", "crop_raster", "detect_objects",
-        "detect_open_vocab", "inspect_image", "inspect_raster", "raster_preview",
-        "raster_statistics", "segment_objects",
+        "analyze_image", "calculate_area", "crop_image", "crop_raster",
+        "detect_objects", "detect_open_vocab", "export_geojson",
+        "get_raster_coordinate", "inspect_image", "inspect_raster",
+        "raster_preview", "raster_statistics", "segment_objects",
+        "zonal_statistics",
     ]
     detail = client.get("/api/v1/tools/analyze_image")
     assert detail.status_code == 200

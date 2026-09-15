@@ -3,7 +3,7 @@
 Multimodal AI Agent for Visual & Geospatial Analysis
 多模态视觉与空间智能分析 Agent
 
-Current milestone: Phase 7 — Remote Sensing Extension.
+Current milestone: Phase 8 — Geospatial Intelligence.
 
 GeoAgent now runs Qwen/Qwen3-VL-4B-Instruct locally on one NVIDIA RTX 4090.
 The user uploads an ordinary RGB image or GeoTIFF and gives a natural-language task. A local
@@ -15,10 +15,13 @@ pixel areas, area ratios, and overlays. The default Chinese UI calls the Agent A
 Phase 6 adds explicit workflow state, stable artifact and detection IDs, dependency
 validation, partial failure recovery, and deterministic result aggregation. Phase 7
 adds GeoTIFF metadata, georeferenced pixel-window crops, downsampled band previews,
-and block-wise raw-value statistics to the same Agent and artifact graph.
+and block-wise raw-value statistics to the same Agent and artifact graph. Phase 8
+adds pixel-to-coordinate conversion, GeoJSON artifacts, CRS-aware area, and raster-
+vector zonal statistics through CPU-only tools.
 
-This is a small Tool-enabled Vision Agent with autonomous tool selection. It uses
-an explicit bounded loop rather than LangGraph or another agent framework. Tracking, advanced GIS analysis, RAG, memory and fine-tuning are not implemented.
+This is a small Tool-enabled Vision and Geospatial Agent with autonomous tool selection.
+It uses an explicit bounded loop rather than LangGraph or another agent framework.
+Tracking, raster algebra, spatial joins, RAG, memory, and fine-tuning are not implemented.
 
 ## Architecture
 
@@ -45,6 +48,10 @@ an explicit bounded loop rather than LangGraph or another agent framework. Track
             -> crop_raster -> georeferenced raster_crop
             -> raster_preview -> downsampled PNG -> optional image tools / Qwen
             -> raster_statistics -> block-wise raw-value band statistics
+            -> get_raster_coordinate -> projected x/y + EPSG:4326 lon/lat
+            -> export_geojson -> vector artifact
+            -> calculate_area -> CRS-aware m² / ha / km² analysis artifact
+            -> zonal_statistics -> block-wise raster/vector analysis artifact
 
 Model code never returns FastAPI responses. InferenceResult belongs to the model
 layer and `analyze_image` converts it to the shared ToolResult contract.
@@ -322,6 +329,10 @@ preview, pixel-window crop with updated affine transform, block-wise statistics,
 raster/image artifact separation, and the real `GeoTIFF -> preview -> analyze_image`
 Agent path. See `docs/phase7-validation.md` for RTX 4090 and live API/UI evidence.
 
+Phase 8 CPU tests cover UTM/geographic pixel coordinates, bbox/polygon/mask GeoJSON,
+known projected and geographic area, raster-vector zonal statistics, Tool API calls,
+and a complete spatial Artifact workflow. See `docs/phase8-validation.md` for evidence.
+
 ## Benchmark
 
 Generate the five original, lightweight RGB scenes and run the full benchmark:
@@ -346,4 +357,4 @@ weight formats, large TIFF files and logs are ignored. The small sample images a
 original project assets. Do not commit user images, credentials, model files,
 Hub cache, benchmark output or datasets.
 
-No commit or push is performed by the Phase 7 workflow.
+No commit or push is performed by the Phase 8 workflow.
